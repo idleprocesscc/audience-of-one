@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import os
 import platform
@@ -843,6 +844,51 @@ def _minutes(duration_ms: int | None) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
+def _iso_utc(timestamp: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+
+
+def _played_ago(last_played_at: str) -> str:
+    try:
+        then = calendar.timegm(time.strptime(last_played_at, "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return ""
+    seconds = max(0.0, time.time() - then)
+    if seconds >= 86400:
+        return f"{int(seconds // 86400)}d ago"
+    if seconds >= 3600:
+        return f"{int(seconds // 3600)}h ago"
+    return "just now"
+
+
+def _play_mark(track: dict) -> str:
+    count = int(track.get("play_count") or 0)
+    if not count:
+        return ""
+    ago = _played_ago(str(track.get("last_played_at") or ""))
+    return f"played {count}×" + (f" · {ago}" if ago else "")
+
+
+def _annotate_play_history(payload: dict, state_path: Path) -> dict:
+    """Fold the station's own played archive into a shelf payload."""
+    plays = rundown.play_history(state_path)
+    if payload.get("source") == "spotify":
+        rows = [track for section in payload["sections"].values() for track in section]
+    elif payload.get("source") == "qqmusic_api_private":
+        rows = list(payload["sections"]["my_favorites"])
+        rows.extend((payload.get("selected_playlist") or {}).get("tracks") or [])
+    else:
+        rows = list(payload.get("tracks") or [])
+    for track in rows:
+        record = plays.get(str(track.get("uri") or "")) or {}
+        track["play_count"] = int(record.get("play_count") or 0)
+        if record.get("last_played_at"):
+            track["last_played_at"] = _iso_utc(record["last_played_at"])
+        else:
+            track.setdefault("last_played_at", None)
+    return payload
+
+
 def _recent_mark(track: dict) -> str:
     positions = track.get("recent_positions") or []
     if not positions:
@@ -867,6 +913,9 @@ def _print_spotify_shelf(payload: dict) -> None:
             recent = _recent_mark(track)
             if recent:
                 marks.append(recent)
+            play = _play_mark(track)
+            if play:
+                marks.append(play)
             if weekly and track.get("also_in_primary"):
                 marks.append(f"also in {playlist['name']}")
             evidence = f"  [{' · '.join(marks)}]" if marks else ""
@@ -892,9 +941,11 @@ def _print_mpv_shelf(payload: dict) -> None:
     for track in payload["tracks"]:
         artists = ", ".join(track.get("artists") or [])
         byline = f" — {artists}" if artists else ""
+        play = _play_mark(track)
+        suffix = f" · {play}" if play else ""
         print(
             f"{track['position']:>3}. {track['name']}{byline} "
-            f"[{_minutes(track.get('duration_ms'))} · {track['format']}]"
+            f"[{_minutes(track.get('duration_ms'))} · {track['format']}]{suffix}"
         )
         print(f"     {track['uri']}")
 
@@ -904,12 +955,14 @@ def _catalog_payload(data: dict, state_path: Path, source: str, *, playlist: str
         music = data.get("music") or {}
         if music.get("backend") != "local":
             raise station_config.ConfigError("station mpv list needs music.backend = local")
-        return catalog.local_shelf(music)
-    spotify_config = data.get("spotify")
-    if not isinstance(spotify_config, dict):
-        raise station_config.ConfigError("missing [spotify] table")
-    client = spotify_client(spotify_config, state_path)
-    return catalog.spotify_shelf(client, spotify_config, playlist=playlist)
+        payload = catalog.local_shelf(music)
+    else:
+        spotify_config = data.get("spotify")
+        if not isinstance(spotify_config, dict):
+            raise station_config.ConfigError("missing [spotify] table")
+        client = spotify_client(spotify_config, state_path)
+        payload = catalog.spotify_shelf(client, spotify_config, playlist=playlist)
+    return _annotate_play_history(payload, state_path)
 
 
 def _emit_catalog(payload: dict, *, as_json: bool) -> None:
@@ -1042,8 +1095,9 @@ def command_spotify(args: argparse.Namespace) -> int:
                     print(f"{marker} {device.get('name') or 'unknown'} [{device.get('id') or '?'}]")
             return 0
         if args.spotify_command == "list":
-            payload = catalog.spotify_shelf(
-                client, spotify_config, playlist=args.playlist or ""
+            payload = _annotate_play_history(
+                catalog.spotify_shelf(client, spotify_config, playlist=args.playlist or ""),
+                state_path,
             )
             _emit_catalog(payload, as_json=args.as_json)
             return 0
@@ -1127,7 +1181,9 @@ def command_qqmusic(args: argparse.Namespace) -> int:
             print(f"QQ MUSIC AUTHORIZED: account {receipt['account']}")
             return 0
         elif args.qqmusic_command == "list":
-            payload = client.private_shelf(playlist=args.playlist or "")
+            payload = _annotate_play_history(
+                client.private_shelf(playlist=args.playlist or ""), state_path
+            )
         elif args.qqmusic_command == "search":
             if not 1 <= args.limit <= 50:
                 raise QQMusicError("QQ Music search limit must be from 1 to 50")
@@ -1171,7 +1227,12 @@ def command_qqmusic(args: argparse.Namespace) -> int:
             print(f"\nMY FAVORITES — {len(sections['my_favorites'])} tracks")
             for track in sections["my_favorites"]:
                 artists = ", ".join(track.get("artists") or []) or "unknown artist"
-                print(f"{track['position']:>3}. {track['name']} — {artists}  [{track['uri']}]")
+                play = _play_mark(track)
+                suffix = f" · {play}" if play else ""
+                print(
+                    f"{track['position']:>3}. {track['name']} — {artists}"
+                    f"  [{track['uri']}]{suffix}"
+                )
             for key, title in (
                 ("created_playlists", "CREATED PLAYLISTS"),
                 ("collected_playlists", "COLLECTED PLAYLISTS"),
@@ -1187,7 +1248,12 @@ def command_qqmusic(args: argparse.Namespace) -> int:
                 print(f"\n---\n\nPLAYLIST — {selected['name']} — {len(selected['tracks'])} tracks")
                 for track in selected["tracks"]:
                     artists = ", ".join(track.get("artists") or []) or "unknown artist"
-                    print(f"{track['position']:>3}. {track['name']} — {artists}  [{track['uri']}]")
+                    play = _play_mark(track)
+                    suffix = f" · {play}" if play else ""
+                    print(
+                        f"{track['position']:>3}. {track['name']} — {artists}"
+                        f"  [{track['uri']}]{suffix}"
+                    )
         else:
             print(f"QQ MUSIC SEARCH — {len(payload['tracks'])} result(s)")
             for track in payload["tracks"]:

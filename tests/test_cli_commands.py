@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -312,6 +313,78 @@ class CLICommandTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("liner-1.mp3", output.getvalue())
             self.assertIn("liner-2.mp3", output.getvalue())
+
+
+class PlayHistoryTests(unittest.TestCase):
+    @staticmethod
+    def _play(state: Path, requested: str, uri: str) -> None:
+        item = rundown.append(state, track=requested)
+        journal = Journal(state)
+        journal.receipt(item["filename"], "track", {"uri": uri})
+        journal.set_state(item["filename"], "played")
+        rundown.archive_played(state, item["filename"])
+
+    def test_play_history_aggregates_receipted_track_uris(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            self._play(state, "Song Title Artist", "spotify:track:abc123")
+            self._play(state, "spotify:track:abc123", "spotify:track:abc123")
+            self._play(state, "local:one.flac", "local:one.flac")
+            voice = rundown.append(state, say="No music here.")
+            Journal(state).set_state(voice["filename"], "played")
+            rundown.archive_played(state, voice["filename"])
+            plays = rundown.play_history(state)
+            self.assertEqual(set(plays), {"spotify:track:abc123", "local:one.flac"})
+            self.assertEqual(plays["spotify:track:abc123"]["play_count"], 2)
+            self.assertEqual(plays["local:one.flac"]["play_count"], 1)
+            self.assertGreater(plays["spotify:track:abc123"]["last_played_at"], 0.0)
+
+    def test_annotation_adds_counts_and_keeps_unplayed_tracks_clean(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            self._play(state, "local:one.flac", "local:one.flac")
+            payload = {
+                "source": "mpv",
+                "tracks": [{"uri": "local:one.flac"}, {"uri": "local:two.flac"}],
+            }
+            played, fresh = cli._annotate_play_history(payload, state)["tracks"]
+            self.assertEqual(played["play_count"], 1)
+            self.assertRegex(played["last_played_at"], r"^\d{4}-\d{2}-\d{2}T.*Z$")
+            self.assertEqual(fresh["play_count"], 0)
+            self.assertIsNone(fresh["last_played_at"])
+
+    def test_annotation_walks_spotify_sections_without_clobbering_recent(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            self._play(state, "spotify:track:abc123", "spotify:track:abc123")
+            payload = {
+                "source": "spotify",
+                "sections": {
+                    "long_term_preference": [{
+                        "uri": "spotify:track:abc123", "last_played_at": "stale",
+                    }],
+                    "unranked_playlist_order": [{
+                        "uri": "spotify:track:zzz999",
+                        "last_played_at": "2026-01-01T00:00:00.000Z",
+                    }],
+                    "spotify_weekly": [],
+                },
+            }
+            annotated = cli._annotate_play_history(payload, state)
+            played = annotated["sections"]["long_term_preference"][0]
+            fresh = annotated["sections"]["unranked_playlist_order"][0]
+            self.assertEqual(played["play_count"], 1)
+            self.assertNotEqual(played["last_played_at"], "stale")
+            self.assertEqual(fresh["play_count"], 0)
+            self.assertEqual(fresh["last_played_at"], "2026-01-01T00:00:00.000Z")
+
+    def test_play_mark_shows_count_and_age_or_nothing(self):
+        track = {
+            "play_count": 3,
+            "last_played_at": cli._iso_utc(time.time() - 2 * 86400),
+        }
+        self.assertEqual(cli._play_mark(track), "played 3× · 2d ago")
+        self.assertEqual(cli._play_mark({"play_count": 0}), "")
 
 
 if __name__ == "__main__":

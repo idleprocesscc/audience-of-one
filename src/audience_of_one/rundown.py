@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .provenance import PROVENANCE
-from .transactions import Journal
+from .transactions import Journal, TransactionError
 
 TRANSITIONS = {"overlap", "clean", "tail", "intro", "blackout", "hard"}
 LEGACY_TRANSITIONS = {"dark": "blackout"}
@@ -127,6 +127,38 @@ def append(state_path: Path, *, track: str | None = None, say: str | None = None
     _atomic_write(path, data)
     Journal(state_path).ensure(path.name)
     return {"id": path.stem, "filename": path.name, "data": data}
+
+
+def play_history(state_path: Path) -> dict[str, dict]:
+    """Aggregate the played archive into per-track evidence.
+
+    Returns a map from the receipted track URI (spotify:track:..., local:...,
+    qqmusic:MID) to {"play_count", "last_played_at"} with an epoch timestamp.
+    """
+    journal = Journal(state_path)
+    plays: dict[str, dict] = {}
+    for path in sorted((state_path / "played").glob("*.json")):
+        try:
+            programme = json.loads(path.read_text(encoding="utf-8"))
+            transaction = journal.load(path.name)
+        except (OSError, json.JSONDecodeError, TransactionError):
+            continue
+        if not isinstance(programme, dict) or not programme.get("track"):
+            continue
+        transaction = transaction or {}
+        uri = str((transaction.get("track") or {}).get("uri") or programme["track"])
+        played_at = max(
+            (float(entry.get("at") or 0.0)
+             for entry in transaction.get("history") or []
+             if entry.get("state") == "played"),
+            default=float(
+                transaction.get("updated_at") or programme.get("created_at") or 0.0
+            ),
+        )
+        record = plays.setdefault(uri, {"play_count": 0, "last_played_at": 0.0})
+        record["play_count"] += 1
+        record["last_played_at"] = max(record["last_played_at"], played_at)
+    return plays
 
 
 def archive_played(state_path: Path, filename: str) -> Path:

@@ -64,6 +64,19 @@ Mac or mobile is only the output route; it never decides whether a request is a
 radio programme. Naming a device changes where the sound lands, not the care owed
 to the show.
 
+## Choose from the shelf, not from memory
+
+Plan the programme's duration first and let the number of songs follow from it;
+a show that starts with "these songs" instead of "this much time" is a playlist
+wearing a host's badge. Then choose from what LIST actually returned. Each track
+now carries its own play evidence — `played 3× · 2d ago` in print, `play_count`
+and `last_played_at` in JSON — computed from this station's own played archive.
+A fresh session has no memory of last week's shows; the shelf does. Trust its
+counts over any impression of what "we usually play". Prefer tracks with low
+play counts unless there is a stated reason to repeat, and make every repeat
+deliberate — by request, or a callback to earlier in the week — never the
+accident of a forgetful selector reaching for the same familiar handful.
+
 ## One programme, one transaction
 
 An opener with voice and music is one command:
