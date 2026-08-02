@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from audience_of_one.adapters.phone import MCPPhoneTransport, PhoneError
+from audience_of_one.cli import doctor_payload
+
+ROOT = Path(__file__).resolve().parents[1]
+SERVER_PATH = ROOT / "android" / "termux" / "station_phone_mcp.py"
+SPEC = importlib.util.spec_from_file_location("station_phone_mcp", SERVER_PATH)
+assert SPEC and SPEC.loader
+SERVER_MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SERVER_MODULE)
+
+
+class PhoneRuntimeTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.server = SERVER_MODULE.StationMCPServer(
+            ("127.0.0.1", 0), root=self.root,
+            token="test-token-with-at-least-thirty-two-characters",
+            location_id="station",
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.transport = MCPPhoneTransport(
+            f"http://{host}:{port}/mcp",
+            "test-token-with-at-least-thirty-two-characters",
+            "station",
+        )
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temporary.cleanup()
+
+    def test_public_transport_writes_appends_reads_and_deletes_below_root(self):
+        self.transport.write("station-inbox/test.b64", "chunk-one")
+        self.transport.write("station-inbox/test.b64", "-two", append=True)
+        self.assertEqual(
+            self.transport.read("station-inbox/test.b64"), "chunk-one-two"
+        )
+        self.transport.delete("station-inbox/test.b64")
+        self.assertEqual(self.transport.read("station-inbox/test.b64"), "")
+
+    def test_wrong_location_and_path_escape_fail_closed(self):
+        wrong = MCPPhoneTransport(
+            self.transport.url, self.transport.token, "somewhere-else"
+        )
+        with self.assertRaises(PhoneError):
+            wrong.write("station-inbox/test", "no")
+        with self.assertRaises(PhoneError):
+            self.transport.write("../outside", "no")
+        self.assertFalse((self.root.parent / "outside").exists())
+
+    def test_wrong_bearer_token_is_rejected(self):
+        wrong = MCPPhoneTransport(self.transport.url, "wrong-token", "station")
+        with self.assertRaises(PhoneError):
+            wrong.read("station-acks/test.jsonl")
+
+    def test_phone_doctor_authenticates_and_requires_a_fresh_player_heartbeat(self):
+        (self.root / "phone-health.json").write_text(json.dumps({
+            "state": "running",
+            "pid": 123,
+            "updated_at": time.time(),
+            "detail": "",
+        }))
+        config = ROOT / "examples" / "config.android-premium.toml"
+        state = self.root / "mac-state"
+        state.mkdir(mode=0o700)
+        env = {
+            "SPOTIFY_CLIENT_ID": "public-test-id",
+            "MINIMAX_API_KEY": "test",
+            "ELEVENLABS_API_KEY": "test",
+            "STATION_PHONE_MCP_URL": self.transport.url,
+            "STATION_PHONE_MCP_TOKEN": self.transport.token,
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            payload = doctor_payload(config, state, phone=True)
+        phone = next(
+            check for check in payload["checks"]
+            if check["component"] == "phone_transport"
+        )
+        self.assertEqual(phone["status"], "pass")
+        self.assertIn("authenticated MCP", phone["detail"])
+
+    def test_phone_doctor_can_read_an_existing_runtime_health_path(self):
+        nested = self.root / "existing-runtime"
+        nested.mkdir()
+        (nested / "health.json").write_text(json.dumps({
+            "state": "running",
+            "pid": 456,
+            "updated_at": time.time(),
+            "detail": "",
+        }))
+        source = (ROOT / "examples" / "config.android-premium.toml").read_text()
+        source = source.replace(
+            'path_prefix = ""',
+            'path_prefix = ""\nhealth_path = "existing-runtime/health.json"',
+        )
+        config = self.root / "custom-health.toml"
+        config.write_text(source)
+        config.chmod(0o600)
+        state = self.root / "custom-state"
+        state.mkdir(mode=0o700)
+        env = {
+            "SPOTIFY_CLIENT_ID": "public-test-id",
+            "MINIMAX_API_KEY": "test",
+            "ELEVENLABS_API_KEY": "test",
+            "STATION_PHONE_MCP_URL": self.transport.url,
+            "STATION_PHONE_MCP_TOKEN": self.transport.token,
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            payload = doctor_payload(config, state, phone=True)
+        phone = next(
+            check for check in payload["checks"]
+            if check["component"] == "phone_transport"
+        )
+        self.assertEqual(phone["status"], "pass")
+
+    def test_runtime_sources_keep_host_transport_and_device_values_external(self):
+        sources = [
+            ROOT / "android" / "termux" / "station-phone-player.sh",
+            ROOT / "android" / "termux" / "station-phone",
+            ROOT / "android" / "termux" / "install.sh",
+            ROOT / "android" / "termux" / "station_phone_mcp.py",
+            ROOT / "android" / "termux" / "station_phone_mpv.py",
+            ROOT / "android" / "focus-helper" / "app" / "src" / "main"
+            / "java" / "io" / "github" / "audienceofone" / "djcontrol"
+            / "FocusActivity.java",
+        ]
+        forbidden_runtime_defaults = (
+            "/Users/",
+            "/data/data/com.termux/files/home/",
+            ".claude/",
+            "trycloudflare.com",
+            "argotunnel.com",
+            "cloudflared tunnel run",
+            "Mac mini",
+        )
+        for source in sources:
+            text = source.read_text(encoding="utf-8")
+            for marker in forbidden_runtime_defaults:
+                self.assertNotIn(marker, text, f"{marker!r} leaked through {source}")
+
+    def test_phone_runtime_and_install_handoff_expose_short_human_controls(self):
+        control = (ROOT / "android" / "termux" / "station-phone").read_text()
+        installer = (ROOT / "android" / "termux" / "install.sh").read_text()
+        self.assertIn('basename "$0")" = "fm"', control)
+        self.assertIn('action="${1:-toggle}"', control)
+        self.assertIn('ln -sf "$BIN/station-phone" "$BIN/fm"', installer)
+        self.assertIn("fm (pause/resume), fm off (stop), fm s (status)", installer)
+
+
+if __name__ == "__main__":
+    unittest.main()

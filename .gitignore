@@ -1,0 +1,42 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.keystore
+*.token
+config.toml
+secrets.toml
+
+# Runtime state and generated audio
+state/
+runtime/
+*.mp3
+*.wav
+*.aiff
+*.m4a
+*.b64
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+dist/
+*.egg-info/
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp

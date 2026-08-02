@@ -1,0 +1,187 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Control the public Audience of One Termux receiver.
+
+set -u
+
+CONFIG="$HOME/.config/audience-of-one/phone.env"
+LIB="$HOME/.local/lib/audience-of-one"
+STATE="$HOME/.local/state/audience-of-one-phone"
+MCP_PIDFILE="$STATE/mcp.pid"
+PLAYER_PIDFILE="$STATE/player.pid"
+MUSIC_PIDFILE="$STATE/music-mpv.pid"
+MUSIC_SOCKET="$STATE/music-mpv.sock"
+MUSIC_HELPER="$LIB/station_phone_mpv.py"
+LOG="$STATE/runtime.log"
+
+[ -r "$CONFIG" ] && . "$CONFIG"
+export STATION_PHONE_ROOT="${STATION_PHONE_ROOT:-$HOME/storage/shared/Download/AudienceOfOne}"
+export STATION_PHONE_BIND="${STATION_PHONE_BIND:-127.0.0.1}"
+export STATION_PHONE_PORT="${STATION_PHONE_PORT:-8787}"
+export STATION_PHONE_LOCATION_ID="${STATION_PHONE_LOCATION_ID:-station}"
+export STATION_PHONE_TOKEN_FILE="${STATION_PHONE_TOKEN_FILE:-$HOME/.config/audience-of-one/phone-token}"
+
+mkdir -p "$STATE"
+
+process_matches() {
+    local pid="$1" pattern="$2" command=""
+    [ -r "/proc/$pid/cmdline" ] && command=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+    printf '%s' "$command" | grep -q "$pattern"
+}
+
+live_pid() {
+    local file="$1" pattern="$2" pid
+    pid=$(cat "$file" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && process_matches "$pid" "$pattern" || return 1
+    printf '%s\n' "$pid"
+}
+
+music_call() {
+    [ -s "$MUSIC_HELPER" ] && [ -S "$MUSIC_SOCKET" ] || return 1
+    python3 "$MUSIC_HELPER" --socket "$MUSIC_SOCKET" "$@"
+}
+
+music_field() {
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1" \
+        2>/dev/null
+}
+
+show_music_status() {
+    local snapshot has_path is_playing volume progress duration
+    snapshot=$(music_call snapshot 2>/dev/null) || {
+        printf 'music=idle\n'
+        return 0
+    }
+    has_path=$(printf '%s' "$snapshot" | music_field has_path)
+    [ "$has_path" = "True" ] || { printf 'music=idle\n'; return 0; }
+    is_playing=$(printf '%s' "$snapshot" | music_field is_playing)
+    volume=$(printf '%s' "$snapshot" | music_field volume_percent)
+    progress=$(printf '%s' "$snapshot" | music_field progress_ms)
+    duration=$(printf '%s' "$snapshot" | music_field duration_ms)
+    if [ "$is_playing" = "True" ]; then
+        printf 'music=playing progress_ms=%s duration_ms=%s volume=%s\n' \
+            "$progress" "$duration" "$volume"
+    else
+        printf 'music=paused progress_ms=%s duration_ms=%s volume=%s\n' \
+            "$progress" "$duration" "$volume"
+    fi
+}
+
+toggle_music() {
+    local snapshot has_path is_playing
+    snapshot=$(music_call snapshot 2>/dev/null) || {
+        printf 'No local station music is loaded.\n' >&2
+        return 1
+    }
+    has_path=$(printf '%s' "$snapshot" | music_field has_path)
+    [ "$has_path" = "True" ] || {
+        printf 'No local station music is loaded.\n' >&2
+        return 1
+    }
+    is_playing=$(printf '%s' "$snapshot" | music_field is_playing)
+    if [ "$is_playing" = "True" ]; then
+        music_call pause >/dev/null || return 1
+        printf 'music=paused\n'
+    else
+        music_call resume >/dev/null || return 1
+        printf 'music=playing\n'
+    fi
+}
+
+off_music() {
+    music_call quit >/dev/null 2>&1 || true
+    rm -f "$MUSIC_PIDFILE" "$MUSIC_SOCKET"
+    printf 'music=off\n'
+}
+
+start_mcp() {
+    live_pid "$MCP_PIDFILE" station_phone_mcp.py >/dev/null && return 0
+    rm -f "$MCP_PIDFILE"
+    nohup python3 "$LIB/station_phone_mcp.py" >> "$LOG" 2>&1 &
+    printf '%s\n' "$!" > "$MCP_PIDFILE"
+}
+
+start_player() {
+    live_pid "$PLAYER_PIDFILE" station-phone-player.sh >/dev/null && return 0
+    rm -f "$PLAYER_PIDFILE"
+    nohup "$LIB/station-phone-player.sh" >> "$LOG" 2>&1 &
+}
+
+stop_one() {
+    local file="$1" pattern="$2" pid count
+    pid=$(live_pid "$file" "$pattern" 2>/dev/null) || { rm -f "$file"; return 0; }
+    kill "$pid" 2>/dev/null || true
+    for count in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    rm -f "$file"
+}
+
+show_status() {
+    if live_pid "$MCP_PIDFILE" station_phone_mcp.py >/dev/null && \
+       curl -fsS --max-time 2 "http://127.0.0.1:$STATION_PHONE_PORT/health" \
+           | grep -q '"healthy"'; then
+        printf 'mcp=up\n'
+    else
+        printf 'mcp=down\n'
+    fi
+    if live_pid "$PLAYER_PIDFILE" station-phone-player.sh >/dev/null; then
+        printf 'player=up\n'
+    else
+        printf 'player=down\n'
+    fi
+    if [ -s "$STATION_PHONE_ROOT/phone-health.json" ]; then
+        printf 'player_heartbeat='
+        cat "$STATION_PHONE_ROOT/phone-health.json"
+    else
+        printf 'player_heartbeat=missing\n'
+    fi
+    show_music_status
+}
+
+wait_ready() {
+    local count status
+    for count in $(seq 1 20); do
+        status=$(show_status)
+        if printf '%s\n' "$status" | grep -q '^mcp=up$' && \
+           printf '%s\n' "$status" | grep -q '^player=up$'; then
+            printf '%s\n' "$status"
+            return 0
+        fi
+        sleep 0.25
+    done
+    show_status
+    return 1
+}
+
+if [ "$(basename "$0")" = "fm" ]; then
+    action="${1:-toggle}"
+else
+    action="${1:-status}"
+fi
+[ "$action" = "s" ] && action=status
+
+case "$action" in
+    start)
+        termux-wake-lock >/dev/null 2>&1 || true
+        start_mcp
+        start_player
+        wait_ready
+        ;;
+    status) show_status ;;
+    stop)
+        stop_one "$PLAYER_PIDFILE" station-phone-player.sh
+        stop_one "$MCP_PIDFILE" station_phone_mcp.py
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    toggle) toggle_music ;;
+    off) off_music ;;
+    *)
+        printf 'Usage: fm | fm off | fm s\n' >&2
+        exit 2
+        ;;
+esac

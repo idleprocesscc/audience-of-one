@@ -1,0 +1,13 @@
+include README.md LICENSE.md LICENSE-NOTICE.md
+include ROADMAP.md PROVENANCE.md
+recursive-include docs *.md
+recursive-include examples *.toml
+recursive-include skills *.md
+recursive-include tests *.py
+recursive-include android *.md *.py *.sh *.gradle *.xml *.java
+include android/termux/station-phone
+include android/focus-helper/gradlew android/focus-helper/gradlew.bat
+include android/focus-helper/gradle/wrapper/gradle-wrapper.jar
+include android/focus-helper/gradle/wrapper/gradle-wrapper.properties
+prune android/focus-helper/build
+prune android/focus-helper/app/build

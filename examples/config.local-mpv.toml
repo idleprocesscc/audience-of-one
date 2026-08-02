@@ -1,0 +1,65 @@
+# Audience of One — deterministic local record box on this Mac.
+
+[station]
+mode = "desktop"
+
+[scheduler]
+poll_seconds = 1.0
+prepare_window_seconds = 75.0
+boundary_lead_seconds = 1.0
+
+[music]
+backend = "local"
+library_root = "~/Music/AudienceOfOne/tracks"
+device = "local_mac"
+stability_seconds = 1.2
+
+# Optional: let QQMusicApi feed account-authorized records to the same mpv.
+[qqmusic]
+enabled = false
+base_url = "http://127.0.0.1:8080"
+timeout_seconds = 8.0
+retries = 2
+
+[desktop]
+local_device_name = ""
+duck_percent = 35
+fade_down_seconds = 0.8
+fade_up_seconds = 1.0
+voice_start_settle_seconds = 0.12
+voice_timeout_margin_seconds = 10.0
+intro_delay_seconds = 0.25
+blackout_gap_seconds = 0.5
+
+[tts]
+chinese = "macos"
+english = "macos"
+
+[tts.providers.macos]
+type = "macos"
+
+[recovery]
+lines = [
+  "The record is ready. Give the turntable one quiet second.",
+  "A small pause while the station resets the needle.",
+]
+
+[improv]
+enabled = false
+liner_chance = 0.25
+lines = [
+  "The record took a turn of its own. Let's hear where it goes.",
+  "That was not the door I reached for, but something came through it.",
+]
+
+[android]
+enabled = false
+transport = "lan"
+device = ""
+mcp_url_env = "STATION_PHONE_MCP_URL"
+mcp_token_env = "STATION_PHONE_MCP_TOKEN"
+location_id = ""
+path_prefix = ""
+voice_start_timeout_seconds = 30.0
+voice_finish_margin_seconds = 20.0
+music_start_timeout_seconds = 30.0

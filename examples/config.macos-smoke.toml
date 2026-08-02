@@ -1,0 +1,62 @@
+# Zero-account TTS profile for the first macOS smoke test.
+# Set SPOTIFY_CLIENT_ID in the environment; never put its value here.
+
+[station]
+mode = "desktop"
+
+[scheduler]
+poll_seconds = 1.0
+prepare_window_seconds = 75.0
+boundary_lead_seconds = 1.0
+
+[desktop]
+local_device_name = ""
+duck_percent = 35
+fade_down_seconds = 0.8
+fade_up_seconds = 1.0
+voice_start_settle_seconds = 0.12
+voice_timeout_margin_seconds = 10.0
+intro_delay_seconds = 0.25
+blackout_gap_seconds = 0.5
+
+[spotify]
+adapter = "web_api"
+device = ""
+client_id_env = "SPOTIFY_CLIENT_ID"
+redirect_uri = "http://127.0.0.1:8899/callback"
+primary_playlist = ""
+weekly_playlist = ""
+
+[tts]
+chinese = "macos"
+english = "macos"
+
+[tts.providers.macos]
+type = "macos"
+
+[recovery]
+lines = [
+  "The signal took the scenic route. The music will be right back.",
+  "A brief pause while the station finds its footing.",
+]
+
+[improv]
+enabled = false
+liner_chance = 0.25
+lines = [
+  "The record took a turn of its own. Let's hear where it goes.",
+  "That was not the door I reached for, but something came through it.",
+  "It seems the machine wanted a song too.",
+]
+
+[android]
+enabled = false
+transport = "lan"
+device = ""
+mcp_url_env = "STATION_PHONE_MCP_URL"
+mcp_token_env = "STATION_PHONE_MCP_TOKEN"
+location_id = ""
+path_prefix = ""
+voice_start_timeout_seconds = 30.0
+voice_finish_margin_seconds = 20.0
+music_start_timeout_seconds = 30.0

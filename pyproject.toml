@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audience-of-one"
+version = "0.1.0.dev0"
+description = "A personal agent-run radio station for an audience of one"
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE.md", "LICENSE-NOTICE.md"]
+requires-python = ">=3.11"
+authors = [{name = "idleprocesscc"}]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.urls]
+Repository = "https://github.com/idleprocesscc/audience-of-one"
+Documentation = "https://github.com/idleprocesscc/audience-of-one/blob/main/docs/DESKTOP-QUICKSTART.md"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.8,<1"]
+
+[project.scripts]
+station = "audience_of_one.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/doc/audience-of-one" = [
+  "README.md",
+  "ROADMAP.md",
+  "LICENSE.md",
+  "LICENSE-NOTICE.md",
+  "PROVENANCE.md",
+  "docs/*.md",
+  "examples/*.toml",
+]
+"share/audience-of-one/skills/station" = ["skills/station/SKILL.md"]
+"share/audience-of-one/android" = [
+  "android/README.md",
+  "android/TRANSPORTS.md",
+]
+"share/audience-of-one/android/termux" = [
+  "android/termux/install.sh",
+  "android/termux/station-phone",
+  "android/termux/station-phone-player.sh",
+  "android/termux/station_focus_receipt.py",
+  "android/termux/station_phone_mcp.py",
+  "android/termux/station_phone_mpv.py",
+]
+"share/audience-of-one/android/focus-helper" = [
+  "android/focus-helper/build.gradle",
+  "android/focus-helper/gradlew",
+  "android/focus-helper/gradlew.bat",
+  "android/focus-helper/settings.gradle",
+]
+"share/audience-of-one/android/focus-helper/gradle/wrapper" = [
+  "android/focus-helper/gradle/wrapper/gradle-wrapper.jar",
+  "android/focus-helper/gradle/wrapper/gradle-wrapper.properties",
+]
+"share/audience-of-one/android/focus-helper/app" = [
+  "android/focus-helper/app/build.gradle",
+]
+"share/audience-of-one/android/focus-helper/app/src/main" = [
+  "android/focus-helper/app/src/main/AndroidManifest.xml",
+]
+"share/audience-of-one/android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol" = [
+  "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/FocusActivity.java",
+]

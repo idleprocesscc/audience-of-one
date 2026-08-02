@@ -1,0 +1,22 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "io.github.audienceofone.djcontrol"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "io.github.audienceofone.djcontrol"
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "0.1.0"
+
+        buildConfigField "String", "PROVENANCE", '"audience-of-one-KCG-2026"'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
