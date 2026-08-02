@@ -33,11 +33,21 @@ public final class RecordActivity extends Activity {
         super.onPostResume();
         Uri uri = getIntent() == null ? null : getIntent().getData();
         if (uri != null && "record".equals(uri.getHost())) {
+            String timestamp = Long.toString(System.currentTimeMillis());
+            String requestId = uri.getQueryParameter("request_id");
+            String output = uri.getQueryParameter("output");
+            if (requestId == null || requestId.isEmpty()) {
+                requestId = "callin-" + timestamp;
+            }
+            if (output == null || output.isEmpty()) {
+                output = "call-in-work/" + timestamp + ".m4a";
+            }
             Intent service = new Intent(this, RecorderService.class);
-            service.putExtra("request_id", uri.getQueryParameter("request_id"));
-            service.putExtra("output", uri.getQueryParameter("output"));
+            service.putExtra("request_id", requestId);
+            service.putExtra("output", output);
             service.putExtra("root", uri.getQueryParameter("root"));
             service.putExtra("duration_seconds", uri.getQueryParameter("duration_seconds"));
+            service.putExtra("cue", "true".equals(uri.getQueryParameter("cue")));
             startForegroundService(service);
         }
         finishAndRemoveTask();

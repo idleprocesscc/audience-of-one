@@ -70,6 +70,11 @@ class PhoneRuntimeTransportTests(unittest.TestCase):
         with self.assertRaises(PhoneError):
             wrong.read("station-acks/test.jsonl")
 
+    def test_transport_reinitializes_after_phone_runtime_restart(self):
+        self.transport.write("station-inbox/test", "still here")
+        self.server.sessions.clear()
+        self.assertEqual(self.transport.read("station-inbox/test"), "still here")
+
     def test_phone_doctor_authenticates_and_requires_a_fresh_player_heartbeat(self):
         (self.root / "phone-health.json").write_text(json.dumps({
             "state": "running",
@@ -176,6 +181,19 @@ class PhoneRuntimeTransportTests(unittest.TestCase):
         )
         self.assertEqual(activity.get(f"{android}exported"), "true")
         self.assertEqual(activity.findall("intent-filter"), [])
+
+    def test_call_in_view_intent_gets_a_unique_default_clip(self):
+        activity = (
+            ROOT / "android" / "focus-helper" / "app" / "src" / "main"
+            / "java" / "io" / "github" / "audienceofone" / "djcontrol"
+            / "RecordActivity.java"
+        ).read_text(encoding="utf-8")
+        watcher = (
+            ROOT / "android" / "termux" / "station-call-in-watch.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"call-in-work/" + timestamp + ".m4a"', activity)
+        self.assertIn('for clip in "$WORK_DIR"/*.m4a', watcher)
+        self.assertIn('mv "$clip" "$claimed"', watcher)
 
     def test_phone_runtime_and_install_handoff_expose_short_human_controls(self):
         control = (ROOT / "android" / "termux" / "station-phone").read_text()

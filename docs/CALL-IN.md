@@ -5,82 +5,61 @@ treats it as a listener calling in. The agent notices within seconds and
 can answer on air through `station say --phone`. Nothing here is required
 for normal radio operation.
 
-Two tiers share the same trigger. The **ring** tier needs no app build:
-one bit crosses, no audio. The **voice** tier records a short clip of
-the caller and hands the agent a transcript; it needs the focus-helper
-APK (which now contains the recorder) and the Termux call-in scripts.
+The shipped path records a short clip and hands the agent a transcript. It
+uses the same focus-helper APK and authenticated phone transport as the
+mobile station. Key Mapper launches the recorder by explicit package and
+class; it does not need Expert Mode, Shizuku, or a shell action.
 
 ## How it fits together
 
-For the ring-only tier, Key Mapper turns the long press into a file touch
-inside the phone receiver's storage root. The Mac polls that file through
-the authenticated MCP file tools it already uses for playback, so this tier
-adds no server, port, or microphone permission.
+The Android helper briefly becomes foreground, records eight seconds, and
+publishes the finished clip into the station's work directory. Termux stages
+it for the Mac, and the Mac consumes it through the same authenticated MCP
+transport it already uses for playback.
 
     long-press Volume Up
-      → Key Mapper (ADB action): touch <root>/call-in/ring
-      → Mac poll loop sees the file, deletes it, notifies the agent
+      → Key Mapper starts djrecord://record?cue=true
+      → helper records into <root>/call-in-work/
+      → Termux stages <root>/call-in-outbox/<epoch>.b64
+      → Mac retrieves, transcribes, and notifies the agent
       → agent answers with `station say --phone`
 
 ## Phone setup
 
-1. Install Key Mapper (F-Droid or Play).
-2. Pair it in **Expert Mode** (enable wireless debugging in Android
-   settings, then pair Key Mapper over ADB). This step is not optional
-   on many phones: volume keys are often wired to a power-management
-   input device (for example `pmic_resin`) that accessibility-based key
-   listeners cannot see at all. Only the ADB-backed mode captures them
-   reliably.
-3. Create a trigger: press Volume Up once so Key Mapper records it,
-   then tick **Long press**.
-4. Add the action **Execute with ADB** with the command:
+1. Install Key Mapper (F-Droid or Play) and enable its accessibility service.
+2. Create a trigger: press Volume Up once so Key Mapper records it,
+   then tick **Long press**. The normal accessibility route requires the
+   screen to be on; detecting hardware keys with the screen fully off is a
+   root-only Key Mapper feature.
+3. Add **Send intent** with these values:
 
-       touch /storage/emulated/0/Download/AudienceOfOne/call-in/ring
+       Type: Activity
+       Description: Audience of One call-in
+       Action: android.intent.action.VIEW
+       Data: djrecord://record?cue=true
+       Package: io.github.audienceofone.djcontrol
+       Class: io.github.audienceofone.djcontrol.RecordActivity
 
-   Adjust the path to the receiver root you configured
-   (`STATION_PHONE_ROOT`); files outside it are rejected by the
-   receiver's path jail. Create the `call-in` directory once first.
-5. Exempt Key Mapper (and Termux) from battery optimisation, or the
+4. Exempt Key Mapper, the helper, and Termux from battery optimisation, or the
    mapping dies quietly after a few hours.
 
-Routes that look simpler but do not work on current Android builds, so
-you can skip re-discovering them: sending Termux a `RUN_COMMAND` intent
-from Key Mapper is denied with a permission error on recent releases,
-and a Termux:Widget shortcut action degrades to placing an icon on the
-home screen under some launcher/Key Mapper combinations. The
-shared-storage touch file is boring and survives all of it.
+On first use, ColorOS/OxygenOS may ask whether Key Mapper may start the audio
+helper. Allow it once; denying that system prompt prevents the recorder from
+ever reaching the microphone.
+
+Two short vibrations mean the microphone is live. One longer vibration means
+the helper saved the clip; one very long vibration means it failed. The
+Termux watcher packages direct helper clips automatically.
 
 ## Mac setup
 
-Poll for the ring with the same authenticated `/mcp` endpoint the
-station already uses. Each call is one JSON-RPC `tools/call` request
-with the phone's bearer token:
-
-    ring() {
-      curl -fsS --max-time 3 "$PHONE_URL/mcp" \
-        -H "Authorization: Bearer $PHONE_TOKEN" \
-        -H 'Content-Type: application/json' \
-        -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"'"$1"'","arguments":{"path":"call-in/ring"}}}'
-    }
-
-    while true; do
-      if ring android_read_file 2>/dev/null | grep -qv error; then
-        ring android_delete_file >/dev/null
-        station say --phone "You rang? I'm here."
-      fi
-      sleep 5
-    done
-
-Deleting the file before speaking makes the claim atomic: a second
-long press during the reply simply creates the next ring. In practice
-you will want the loop above replaced by the shipped watcher, which
-speaks the same protocol with receipts and state:
+Use the shipped watcher; it speaks the authenticated phone protocol, keeps
+local event state, and leaves incomplete uploads for the next pass:
 
     station call-in watch            # loop; one JSON event per line
     station call-in watch --once     # single pass
 
-A claimed ring prints `{"event": "ring", ...}`. Your agent loop decides
-the on-air reply.
+Your agent harness consumes the JSON events and decides the on-air reply.
 
 ## Voice call-in
 
@@ -95,11 +74,9 @@ notification and all, exactly as Android intends.
 The chain, end to end:
 
     long-press Volume Up
-      → Key Mapper touches <root>/call-in/ring
-      → station-call-in-watch.sh claims the ring (atomic mv)
-      → station-call-in-record.sh buzzes twice, fires djrecord://record
+      → Key Mapper starts djrecord://record?cue=true
       → RecorderService records N seconds of AAC into <root>/call-in-work/
-      → the script base64-wraps the clip (1024 columns + END. sentinel)
+      → station-call-in-watch.sh base64-wraps the clip (1024 columns + END.)
         into <root>/call-in-outbox/<epoch>.b64 and deletes the raw clip
       → `station call-in watch` on the Mac pages the clip down over the
         authenticated /mcp endpoint, decodes it, sends it to the STT
@@ -114,11 +91,11 @@ The chain, end to end:
 
        adb shell pm grant io.github.audienceofone.djcontrol android.permission.RECORD_AUDIO
 
-   Termux launches the recorder by explicit Android component. The activity
-   is not registered as a browser URL handler, so a web page cannot turn a
-   `djrecord://` link into a microphone trigger.
+   The recorder has no browser intent filter. Key Mapper sends the
+   `djrecord://record` data directly to the exported recorder activity by
+   package and class.
 
-2. Keep the Key Mapper trigger from the ring tier unchanged.
+2. Keep the Key Mapper trigger and intent action above.
 3. Enable the watcher in `~/.config/audience-of-one/phone.env`:
 
        STATION_CALLIN_ENABLED=1

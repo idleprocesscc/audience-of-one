@@ -102,6 +102,20 @@ class MCPPhoneTransport:
         try:
             response = self.opener(request, timeout=self.timeout)
             raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as error:
+            # The phone server uses HTTP 400 for an expired MCP session. Keep
+            # its JSON-RPC body so call() can discard the stale session and
+            # initialize once more; treating this as a transport outage leaves
+            # a healthy phone stuck until the Mac process is restarted.
+            raw = error.read().decode("utf-8", errors="replace")
+            if raw.strip():
+                try:
+                    return _json_message(raw)
+                except PhoneError:
+                    pass
+            raise PhoneError(
+                f"phone MCP request failed: HTTP {error.code}"
+            ) from error
         except (OSError, urllib.error.URLError) as error:
             raise PhoneError(f"phone MCP request failed: {error}") from error
         returned_session = response.headers.get("mcp-session-id")

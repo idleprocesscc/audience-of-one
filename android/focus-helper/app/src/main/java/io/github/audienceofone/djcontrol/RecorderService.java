@@ -15,6 +15,9 @@ import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.MediaStore;
 import android.util.Log;
 
@@ -52,12 +55,16 @@ public final class RecorderService extends Service {
         String requestId = safeId(intent == null ? null : intent.getStringExtra("request_id"));
         String output = intent == null ? null : intent.getStringExtra("output");
         String root = intent == null ? null : intent.getStringExtra("root");
+        boolean cue = intent != null && intent.getBooleanExtra("cue", false);
         if (root == null || root.isEmpty()) {
             root = DEFAULT_ROOT;
         }
         int seconds = clampSeconds(intent == null ? null : intent.getStringExtra("duration_seconds"));
         if (busy) {
             publish(requestId, "busy", 0);
+            if (cue) {
+                vibrate(600);
+            }
             return START_NOT_STICKY;
         }
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
@@ -70,6 +77,15 @@ public final class RecorderService extends Service {
             return START_NOT_STICKY;
         }
         busy = true;
+        if (cue) {
+            vibrate(120);
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            vibrate(120);
+        }
         publish(requestId, "recording", seconds);
         final String finalRoot = root;
         final String finalOutput = output;
@@ -78,9 +94,15 @@ public final class RecorderService extends Service {
             try {
                 record(requestId, finalRoot, finalOutput, finalSeconds);
                 publish(requestId, "saved", finalSeconds);
+                if (cue) {
+                    vibrate(300);
+                }
             } catch (Exception error) {
                 Log.w(TAG, "record failed request=" + requestId, error);
                 publish(requestId, "failed", 0);
+                if (cue) {
+                    vibrate(600);
+                }
             } finally {
                 busy = false;
                 stopSelf();
@@ -188,6 +210,20 @@ public final class RecorderService extends Service {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         } else {
             startForeground(1, notification);
+        }
+    }
+
+    private void vibrate(long milliseconds) {
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= 31) {
+            VibratorManager manager = getSystemService(VibratorManager.class);
+            vibrator = manager == null ? null : manager.getDefaultVibrator();
+        } else {
+            vibrator = getSystemService(Vibrator.class);
+        }
+        if (vibrator != null && vibrator.hasVibrator()) {
+            vibrator.vibrate(VibrationEffect.createOneShot(
+                milliseconds, VibrationEffect.DEFAULT_AMPLITUDE));
         }
     }
 
