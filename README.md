@@ -34,11 +34,11 @@ the listener supplies the files.
 ## Status
 
 The macOS control room and Android receiver have completed real-device
-rehearsals. The v0.1 scheduler consumes a live rundown, prepares the next item
+rehearsals. A clean-clone install and multi-track scheduler rehearsal have also
+passed. The v0.1 scheduler consumes a live rundown, prepares the next item
 before the current record ends, and fires it from real position and duration
 evidence. Voice, music, transition, fader, recovery, and after-song policy stay
-in receipted transactions. A clean-device install audit remains before
-publication; later directions live in [ROADMAP.md](ROADMAP.md).
+in receipted transactions. Later directions live in [ROADMAP.md](ROADMAP.md).
 
 ## Architecture status
 
@@ -58,6 +58,9 @@ publication; later directions live in [ROADMAP.md](ROADMAP.md).
   account-authorized stream, Termux mpv proves position motion, and the URL is
   removed from the transport inbox before playout; real-device music, duck,
   restore, and pause receipts have passed;
+- optional shipped toy: a physical-key call-in can remain a ring-only signal or
+  use the Android foreground recorder, authenticated phone transport, and a
+  listener-chosen STT endpoint to hand one short voice clip to the agent;
 - runnable: deterministic local record box through mpv, with root-confined file
   resolution, exact metadata/progress/pause/repeat receipts, live transitions,
   and a durable fader;
@@ -65,8 +68,6 @@ publication; later directions live in [ROADMAP.md](ROADMAP.md).
   search, QR-authorized private shelves, and account-authorized streams to the
   same mpv transaction/fader contract; playback URLs and credentials are not
   written to receipts;
-- pending release gate: a clean-room Android install following only the public
-  guide;
 
 *The private build's voice lines are love letters and stay home. This repo ships the instrument, not the song.*
 
@@ -80,8 +81,8 @@ narrower, receipt-driven Mac adapter; the guide records its observed behavior.
 
 For Spotify Premium music and speech on the same Android phone, hand the
 [Android guide](android/README.md) to an AI agent. It covers both 5G
-routes and the standalone `station say "..." --phone` intercom; LAN and physical
-hotline experiments stay outside the main path.
+routes and the standalone `station say "..." --phone` intercom. The optional
+[physical call-in](docs/CALL-IN.md) stays outside the main installation path.
 
 For the no-subscription local route, use the
 [local record-box preview](docs/LOCAL-RECORD-BOX.md). It shares the programme and

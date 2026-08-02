@@ -24,7 +24,7 @@ QQ Music streams do not need a pre-copied file on Android.
 | F-Droid Termux, Termux:API and Termux:Boot from one signing source | Required | Keep all three in the same signing family. |
 | One 5G transport | Required away from home | Choose Tailscale or a persistent Cloudflare Tunnel. A LAN is only the fallback bench. |
 | Android focus helper | Required for verified phone ducking | Speech still works without it, but the receipt honestly says `duck_failed`. |
-| Key Mapper / physical hotline | Optional toy, not included | Entirely. It is not part of first installation or radio reliability. |
+| Key Mapper / physical call-in | Optional shipped toy | Entirely. It is not part of first installation or radio reliability. |
 
 ## 1. Prepare the Mac first
 
@@ -328,8 +328,13 @@ is not a successful fader.
 
 Capability note: the helper's exported `djfocus://` activity lets another
 Android app on the same phone request a temporary audio-focus duck. It reads no
-files and caps a lease at 120 seconds. Install it when verified ducking is worth
-exposing that narrow local control.
+files and caps a lease at 120 seconds. Since 0.2.0 the same APK also exports a
+`djrecord://` activity backing the optional voice call-in: it can record up to
+60 seconds of microphone audio into the station folder under shared Downloads,
+but only after the microphone permission is granted by hand (the details and
+the privacy path live in [docs/CALL-IN.md](../docs/CALL-IN.md)). Install the
+helper when verified ducking is worth exposing that narrow local control; the
+microphone stays dead until you grant it.
 
 ## 9. Lock-screen and reboot acceptance
 
@@ -356,7 +361,13 @@ that may already have reached your ears.
 
 ## Optional toy shelf
 
-A physical-key hotline and Key Mapper integration are possible optional toys.
-They stay outside the first installation so the core path remains short.
-A future public hotline can graduate from the toy shelf with its own source,
-permissions, privacy map, and receipt tests.
+A physical call-in — long-press Volume Up and the agent answers on air —
+is described in [docs/CALL-IN.md](../docs/CALL-IN.md). It is deliberately
+outside the first installation so the core path stays short. The ring-only
+tier works with the shipped receiver and no app build; the voice tier now
+ships too — the focus helper 0.2.0 APK carries a microphone foreground
+service, the Termux scripts stage each clip, and `station call-in watch`
+turns it into a transcript on the Mac. Voice needs the APK build, one
+microphone grant, and an STT endpoint you choose; when any of that is
+missing, the ring remains the honest fallback: one bit and no microphone
+audio.

@@ -94,6 +94,12 @@ health_path = "phone-health.json"
 voice_start_timeout_seconds = 30.0
 voice_finish_margin_seconds = 20.0
 music_start_timeout_seconds = 30.0
+
+[call_in]
+stt_url = ""
+outbox = "call-in-outbox"
+ring = "call-in/ring"
+poll_seconds = 5.0
 """
 
 
@@ -250,6 +256,25 @@ def validate(data: dict[str, Any]) -> list[str]:
             not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0
         ):
             raise ConfigError(f"android.{field} must be a positive number")
+
+    call_in = data.get("call_in", {})
+    if not isinstance(call_in, dict):
+        raise ConfigError("[call_in] must be a table")
+    if call_in:
+        stt_url = call_in.get("stt_url", "")
+        if not isinstance(stt_url, str) or (
+            stt_url and not stt_url.startswith(("http://", "https://"))
+        ):
+            raise ConfigError("call_in.stt_url must be empty or an http(s) URL")
+        for field in ("outbox", "ring"):
+            value = call_in.get(field, "")
+            if not isinstance(value, str):
+                raise ConfigError(f"call_in.{field} must be a string")
+        poll = call_in.get("poll_seconds")
+        if poll is not None and (
+            not isinstance(poll, (int, float)) or isinstance(poll, bool) or poll <= 0
+        ):
+            raise ConfigError("call_in.poll_seconds must be a positive number")
 
     duck = desktop.get("duck_percent", 35)
     if not isinstance(duck, int) or isinstance(duck, bool) or not 0 <= duck <= 100:

@@ -197,6 +197,36 @@ class MCPPhoneTransport:
                 numbered.append(match.group(1))
         return "\n".join(numbered) if numbered else raw
 
+    def list_names(self, path: str) -> list[str]:
+        raw = self.call("android_list_files", {
+            "location_id": self.location_id,
+            "path": self._path(path),
+        })
+        start = raw.find("{")
+        if start < 0:
+            return []
+        try:
+            data = json.loads(raw[start:])
+        except json.JSONDecodeError as error:
+            raise PhoneError("phone MCP returned an invalid file listing") from error
+        files = data.get("files")
+        if not isinstance(files, list):
+            return []
+        return [
+            str(entry.get("name") or "")
+            for entry in files
+            if isinstance(entry, dict) and entry.get("name") and not entry.get("is_directory")
+        ]
+
+    def read_lines(self, path: str, *, start_line: int = 1, max_lines: int = 100) -> list[str]:
+        raw = self.call("android_read_file", {
+            "location_id": self.location_id,
+            "path": self._path(path),
+            "start_line": start_line,
+            "max_lines": max_lines,
+        })
+        return raw.splitlines()
+
     def _path(self, path: str) -> str:
         relative = PurePosixPath(path)
         if relative.is_absolute() or ".." in relative.parts:
@@ -577,7 +607,7 @@ class PhoneMusicPlayer:
         return self._result(staged, receipts)
 
 
-def phone_voice_player(data: dict[str, Any]) -> PhoneVoicePlayer:
+def phone_transport(data: dict[str, Any]) -> MCPPhoneTransport:
     android = data.get("android") or {}
     url_env = str(android.get("mcp_url_env") or "STATION_PHONE_MCP_URL")
     token_env = str(android.get("mcp_token_env") or "STATION_PHONE_MCP_TOKEN")
@@ -587,13 +617,18 @@ def phone_voice_player(data: dict[str, Any]) -> PhoneVoicePlayer:
         raise PhoneError(f"set environment variable {url_env}")
     if not token:
         raise PhoneError(f"set environment variable {token_env}")
-    transport = MCPPhoneTransport(
+    return MCPPhoneTransport(
         url,
         token,
         str(android.get("location_id") or ""),
         path_prefix=str(android.get("path_prefix") or ""),
         timeout=float(android.get("mcp_timeout_seconds", 10.0)),
     )
+
+
+def phone_voice_player(data: dict[str, Any]) -> PhoneVoicePlayer:
+    android = data.get("android") or {}
+    transport = phone_transport(data)
     desktop = data.get("desktop") or {}
     return PhoneVoicePlayer(
         transport,
@@ -609,19 +644,7 @@ def phone_voice_player(data: dict[str, Any]) -> PhoneVoicePlayer:
 
 def phone_music_player(data: dict[str, Any]) -> PhoneMusicPlayer:
     android = data.get("android") or {}
-    url_env = str(android.get("mcp_url_env") or "STATION_PHONE_MCP_URL")
-    token_env = str(android.get("mcp_token_env") or "STATION_PHONE_MCP_TOKEN")
-    url = os.environ.get(url_env, "")
-    token = os.environ.get(token_env, "")
-    if not url:
-        raise PhoneError(f"set environment variable {url_env}")
-    if not token:
-        raise PhoneError(f"set environment variable {token_env}")
-    transport = MCPPhoneTransport(
-        url, token, str(android.get("location_id") or ""),
-        path_prefix=str(android.get("path_prefix") or ""),
-        timeout=float(android.get("mcp_timeout_seconds", 10.0)),
-    )
+    transport = phone_transport(data)
     return PhoneMusicPlayer(
         transport,
         start_timeout=float(android.get("music_start_timeout_seconds", 30.0)),

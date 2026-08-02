@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Receive Android audio-focus receipts over Termux loopback only."""
+"""Receive Android audio-focus and recorder receipts over Termux loopback only."""
 
 from __future__ import annotations
 
@@ -11,19 +11,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("STATION_FOCUS_RECEIPT_PORT", "18765"))
-STATE = os.path.expanduser(os.environ.get(
-    "STATION_FOCUS_STATE", "~/.local/state/audience-of-one-phone/focus.state"
-))
+STATES = {
+    "/focus": os.path.expanduser(os.environ.get(
+        "STATION_FOCUS_STATE", "~/.local/state/audience-of-one-phone/focus.state"
+    )),
+    "/record": os.path.expanduser(os.environ.get(
+        "STATION_RECORD_STATE", "~/.local/state/audience-of-one-phone/record.state"
+    )),
+}
 SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 SAFE_STATE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
 
 
-def publish(request_id: str, state: str, result: int, updated_at: int) -> None:
+def publish(target: str, request_id: str, state: str, result: int, updated_at: int) -> None:
     if not SAFE_ID.fullmatch(request_id) or not SAFE_STATE.fullmatch(state):
-        raise ValueError("invalid focus receipt")
-    directory = os.path.dirname(STATE)
+        raise ValueError("invalid receipt")
+    directory = os.path.dirname(target)
     os.makedirs(directory, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".focus-", dir=directory, text=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".receipt-", dir=directory, text=True)
     try:
         with os.fdopen(descriptor, "w", encoding="ascii") as handle:
             handle.write(
@@ -32,7 +37,7 @@ def publish(request_id: str, state: str, result: int, updated_at: int) -> None:
             )
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, STATE)
+        os.replace(temporary, target)
     finally:
         try:
             os.unlink(temporary)
@@ -44,7 +49,8 @@ class ReceiptHandler(BaseHTTPRequestHandler):
     server_version = "AudienceOfOneFocus/1"
 
     def do_POST(self) -> None:
-        if self.path != "/focus":
+        target = STATES.get(self.path)
+        if target is None:
             self.send_error(404)
             return
         try:
@@ -59,6 +65,7 @@ class ReceiptHandler(BaseHTTPRequestHandler):
                 self.rfile.read(length).decode("utf-8"), keep_blank_values=True
             )
             publish(
+                target,
                 fields.get("request_id", [""])[0],
                 fields.get("state", [""])[0],
                 int(fields.get("result", ["0"])[0]),

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
 
@@ -136,9 +137,17 @@ class PhoneRuntimeTransportTests(unittest.TestCase):
             ROOT / "android" / "termux" / "install.sh",
             ROOT / "android" / "termux" / "station_phone_mcp.py",
             ROOT / "android" / "termux" / "station_phone_mpv.py",
+            ROOT / "android" / "termux" / "station-call-in-record.sh",
+            ROOT / "android" / "termux" / "station-call-in-watch.sh",
             ROOT / "android" / "focus-helper" / "app" / "src" / "main"
             / "java" / "io" / "github" / "audienceofone" / "djcontrol"
             / "FocusActivity.java",
+            ROOT / "android" / "focus-helper" / "app" / "src" / "main"
+            / "java" / "io" / "github" / "audienceofone" / "djcontrol"
+            / "RecordActivity.java",
+            ROOT / "android" / "focus-helper" / "app" / "src" / "main"
+            / "java" / "io" / "github" / "audienceofone" / "djcontrol"
+            / "RecorderService.java",
         ]
         forbidden_runtime_defaults = (
             "/Users/",
@@ -153,6 +162,20 @@ class PhoneRuntimeTransportTests(unittest.TestCase):
             text = source.read_text(encoding="utf-8")
             for marker in forbidden_runtime_defaults:
                 self.assertNotIn(marker, text, f"{marker!r} leaked through {source}")
+
+    def test_call_in_recorder_is_explicit_only_not_a_browser_handler(self):
+        manifest = (
+            ROOT / "android" / "focus-helper" / "app" / "src" / "main"
+            / "AndroidManifest.xml"
+        )
+        root = ET.parse(manifest).getroot()
+        android = "{http://schemas.android.com/apk/res/android}"
+        activity = next(
+            node for node in root.findall("./application/activity")
+            if node.get(f"{android}name") == ".RecordActivity"
+        )
+        self.assertEqual(activity.get(f"{android}exported"), "true")
+        self.assertEqual(activity.findall("intent-filter"), [])
 
     def test_phone_runtime_and_install_handoff_expose_short_human_controls(self):
         control = (ROOT / "android" / "termux" / "station-phone").read_text()

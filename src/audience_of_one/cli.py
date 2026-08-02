@@ -16,10 +16,11 @@ from pathlib import Path
 from . import __version__, catalog, covers, rundown, scheduler, shortcuts, wildcards
 from . import config as station_config
 from .adapters import music_client, spotify_client
-from .adapters.phone import PhoneError, phone_voice_player
+from .adapters.phone import PhoneError, phone_transport, phone_voice_player
 from .adapters.qqmusic import QQMusicClient, QQMusicError, select_search_result
 from .adapters.spotify import SpotifyError
 from .adapters.spotify_auth import authorize_interactive
+from .call_in import CallInError, CallInWatcher
 from .desktop import DesktopEngine, PlayoutError
 from .fader import LiveFader
 from .paths import config_file, state_dir
@@ -178,6 +179,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="stream through the configured Android Termux mpv receiver",
     )
     qqmusic_open.add_argument("--json", action="store_true", dest="as_json")
+
+    call_in_parser = sub.add_parser(
+        "call-in", help="watch the phone hotline for rings and voice clips"
+    )
+    call_in_sub = call_in_parser.add_subparsers(dest="call_in_command", required=True)
+    call_in_watch = call_in_sub.add_parser(
+        "watch", help="poll the phone outbox and print one JSON event per call"
+    )
+    call_in_watch.add_argument("--once", action="store_true", help="poll a single pass")
+    call_in_watch.add_argument(
+        "--interval", type=float, help="seconds between polls; defaults to call_in.poll_seconds"
+    )
 
     shortcut_parser = sub.add_parser("shortcut", help="install or inspect the macOS toggle")
     shortcut_sub = shortcut_parser.add_subparsers(dest="shortcut_command", required=True)
@@ -366,7 +379,7 @@ def doctor_payload(path: Path, state_path: Path, *, phone: bool = False) -> dict
         "status": "pass" if adapter_ready else "action_required",
         "detail": f"desktop direct playout is installed with "
         f"{backend if backend == 'local' else adapter}; "
-        "always-on scheduling is not available in v0.1"
+        "the rundown scheduler is installed; queue a programme, then run station start"
         if adapter_ready else "choose a supported spotify.adapter",
     })
     if phone:
@@ -1189,6 +1202,48 @@ def command_qqmusic(args: argparse.Namespace) -> int:
         return 2
 
 
+def command_call_in(args: argparse.Namespace) -> int:
+    path, state_path = _paths(args)
+    try:
+        data, _ = _validate(path)
+        android = data.get("android") or {}
+        if not android.get("enabled"):
+            raise station_config.ConfigError("set android.enabled = true before call-in watch")
+        call_in = data.get("call_in") or {}
+        watcher = CallInWatcher(
+            phone_transport(data),
+            state_path,
+            stt_url=str(call_in.get("stt_url") or ""),
+            outbox_dir=str(call_in.get("outbox") or "call-in-outbox"),
+            ring_path=str(call_in.get("ring") or "call-in/ring"),
+        )
+        interval = args.interval
+        if interval is None:
+            interval = float(call_in.get("poll_seconds", 5.0))
+        if interval <= 0:
+            raise station_config.ConfigError("call-in interval must be positive")
+    except (station_config.ConfigError, PhoneError, CallInError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    while True:
+        try:
+            for event in watcher.poll_once():
+                print(json.dumps(event, ensure_ascii=False), flush=True)
+        except (CallInError, OSError) as error:
+            print(
+                json.dumps({"version": 1, "event": "watch_error", "error": str(error)}),
+                file=sys.stderr, flush=True,
+            )
+            if args.once:
+                return 2
+        if args.once:
+            return 0
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            return 0
+
+
 def command_shortcut(args: argparse.Namespace) -> int:
     path, _ = _paths(args)
     try:
@@ -1261,6 +1316,8 @@ def main(argv: list[str] | None = None) -> None:
         code = command_spotify(args)
     elif args.command == "qqmusic":
         code = command_qqmusic(args)
+    elif args.command == "call-in":
+        code = command_call_in(args)
     elif args.command == "shortcut":
         code = command_shortcut(args)
     else:

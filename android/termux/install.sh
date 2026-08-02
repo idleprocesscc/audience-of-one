@@ -36,6 +36,8 @@ install -m 700 "$SOURCE/station-phone-player.sh" "$LIB/station-phone-player.sh"
 install -m 700 "$SOURCE/station_phone_mcp.py" "$LIB/station_phone_mcp.py"
 install -m 700 "$SOURCE/station_phone_mpv.py" "$LIB/station_phone_mpv.py"
 install -m 700 "$SOURCE/station_focus_receipt.py" "$LIB/station_focus_receipt.py"
+install -m 700 "$SOURCE/station-call-in-watch.sh" "$LIB/station-call-in-watch.sh"
+install -m 700 "$SOURCE/station-call-in-record.sh" "$LIB/station-call-in-record.sh"
 
 if [ ! -s "$TOKEN_FILE" ]; then
     python3 -c 'import secrets; print(secrets.token_urlsafe(36))' > "$TOKEN_FILE"

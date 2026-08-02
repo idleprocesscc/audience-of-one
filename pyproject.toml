@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audience-of-one"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "A personal agent-run radio station for an audience of one"
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -29,6 +29,9 @@ dev = ["ruff>=0.8,<1"]
 [project.scripts]
 station = "audience_of_one.cli:main"
 
+[tool.ruff]
+target-version = "py311"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -49,6 +52,8 @@ where = ["src"]
 ]
 "share/audience-of-one/android/termux" = [
   "android/termux/install.sh",
+  "android/termux/station-call-in-record.sh",
+  "android/termux/station-call-in-watch.sh",
   "android/termux/station-phone",
   "android/termux/station-phone-player.sh",
   "android/termux/station_focus_receipt.py",
@@ -73,4 +78,6 @@ where = ["src"]
 ]
 "share/audience-of-one/android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol" = [
   "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/FocusActivity.java",
+  "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/RecordActivity.java",
+  "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/RecorderService.java",
 ]

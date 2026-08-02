@@ -138,6 +138,7 @@ class StationCLITests(unittest.TestCase):
             self.assertIn("not required", spotify["detail"])
             self.assertEqual(engine["status"], "pass")
             self.assertIn("macos_applescript", engine["detail"])
+            self.assertIn("rundown scheduler is installed", engine["detail"])
 
     def test_local_profile_needs_no_spotify_account_and_requires_its_library(self):
         data = tomllib.loads((ROOT / "examples" / "config.local-mpv.toml").read_text())

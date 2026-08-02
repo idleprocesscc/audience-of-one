@@ -202,6 +202,17 @@ class StationMCPHandler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 return ""
             return "\n".join(lines[start - 1:start - 1 + limit])
+        if tool == "android_list_files":
+            try:
+                entries = sorted(path.iterdir(), key=lambda entry: entry.name)
+            except FileNotFoundError:
+                return json.dumps({"files": []})
+            except NotADirectoryError as error:
+                raise TransportError("path is not a directory") from error
+            return json.dumps({"files": [
+                {"name": entry.name, "is_directory": entry.is_dir()}
+                for entry in entries
+            ]})
         raise TransportError("unsupported phone transport tool")
 
 

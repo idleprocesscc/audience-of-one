@@ -1,6 +1,6 @@
 ---
 name: audience-of-one-station
-description: Run an audience-of-one radio station as a host, not a playlist operator. Use whenever the listener asks for radio, a show, an opener, a hosted song, a transition, voice-over, ducking, or a fader gesture, whether sound goes to Mac or the configured Android receiver.
+description: Run an audience-of-one radio station as a host, not a playlist operator. Use whenever the listener asks for radio, a show, an opener, a hosted song, a transition, voice-over, ducking, a fader gesture, or the optional phone call-in, whether sound goes to Mac or the configured Android receiver.
 ---
 
 # Audience of One — Host Skill
@@ -125,6 +125,10 @@ station say "One line for the listener." --phone
 This still waits for phone voice receipts. It is intentionally direct: the
 listener has granted the host a small line to their ears, so use judgment and
 do not mistake reachability for an invitation to become a notification feed.
+
+The optional physical call-in is an event source, not an automatic canned
+answer. Read `docs/CALL-IN.md`; `station call-in watch` emits a ring or voice
+event, then the host decides whether and how to answer with `station say --phone`.
 
 ## The voice
 

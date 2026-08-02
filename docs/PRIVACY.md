@@ -36,3 +36,16 @@ and redacted receipts.
 The Android focus helper posts only a playout request ID and focus state to a
 Termux loopback listener. The repository carries its reproducible source; each
 installation supplies its own APK, tunnel, token, and generated clips.
+
+The voice call-in path records the listener's own microphone, so its data path
+deserves the sharpest look. The raw clip sits briefly on shared Android storage
+(`call-in-work/`, readable by any app holding the storage permission) and is
+deleted as soon as the base64 transport copy is staged; the transport copy is
+deleted from the phone after the Mac pulls it. On the Mac the decoded audio and
+its transcript live in the local state directory (`call-in/clips/`,
+`call-in/events.jsonl`) under the same restrictive permissions as other state.
+The STT endpoint is user-configured: point it at a local server (the shipped
+FunASR example stays on the machine) and nothing leaves the house; point it at
+a hosted API and the recorded voice is subject to that provider's terms. The
+package never chooses a provider on its own, and an empty `stt_url` keeps the
+audio local and untranscribed.
