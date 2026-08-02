@@ -99,7 +99,10 @@ def append(state_path: Path, *, track: str | None = None, say: str | None = None
     queue_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     identifier = int(time.time() * 1000)
     path = queue_dir / f"{identifier:015d}.json"
-    while path.exists():
+    # A same-millisecond append after an archive would reuse a filename the
+    # played archive already holds, and archive_played would overwrite that
+    # earlier evidence; the identifier must be unique across both directories.
+    while path.exists() or (state_path / "played" / path.name).exists():
         identifier += 1
         path = queue_dir / f"{identifier:015d}.json"
     data = {
