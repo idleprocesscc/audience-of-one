@@ -76,15 +76,15 @@ The chain, end to end:
     long-press Volume Up
       → Key Mapper starts djrecord://record?cue=true
       → RecorderService records N seconds of AAC into <root>/call-in-work/
-      → station-call-in-watch.sh base64-wraps the clip (1024 columns + END.)
-        into <root>/call-in-outbox/<epoch>.b64 and deletes the raw clip
+      → the `saved` receipt base64-wraps the clip (1024 columns + END.)
+        into the private call-in outbox and deletes the raw clip
       → `station call-in watch` on the Mac pages the clip down over the
         authenticated /mcp endpoint, decodes it, sends it to the STT
         endpoint, deletes the remote copy, and prints a "call" event
 
 ### Phone setup (voice tier)
 
-1. Build and install the focus helper 0.2.0 or later (see the
+1. Build and install the focus helper 0.3.2 or later (see the
    [Android guide](../android/README.md) section 8; the same APK now
    carries `RecorderService`). Grant its microphone permission once —
    the app has no launcher icon, so use App info → Permissions, or:
@@ -96,19 +96,9 @@ The chain, end to end:
    package and class.
 
 2. Keep the Key Mapper trigger and intent action above.
-3. Enable the watcher in `~/.config/audience-of-one/phone.env`:
-
-       STATION_CALLIN_ENABLED=1
-       # optional overrides, with their defaults:
-       # STATION_CALLIN_SECONDS=8
-       # STATION_CALLIN_OUTBOX=call-in-outbox
-       # STATION_CALLIN_RING=call-in/ring
-       # STATION_CALLIN_POLL_SECONDS=1
-
-   Then `station-phone restart`. The wrapper starts
-   `station-call-in-watch.sh` alongside the receiver and reports
-   `callin=up` in `station-phone status`. Without the flag the scripts
-   stay installed but dormant and the ring tier keeps working as before.
+3. Run `station-phone restart`. The receiver reports `callin=integrated`:
+   no second shared-storage watcher is installed. The recorder's `saved`
+   receipt is the event that stages exactly that clip.
 
 The vibration is the interface: two short buzzes mean the microphone is
 live, one long buzz means the clip is staged, one very long buzz means
@@ -125,6 +115,10 @@ Configure `[call_in]` in `config.toml`:
     outbox = "call-in-outbox"
     ring = "call-in/ring"
     poll_seconds = 5.0
+
+`poll_seconds` is only a reconnect backoff. A healthy Mac watcher uses the
+phone's long wait and wakes immediately on a call-in event instead of listing
+the outbox every five seconds.
 
 The STT contract is one POST of raw audio bytes answered with
 `{"text": "..."}`. Any local or remote transcription service that

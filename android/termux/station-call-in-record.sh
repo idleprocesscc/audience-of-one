@@ -8,7 +8,9 @@ set -u
 CONFIG="$HOME/.config/audience-of-one/phone.env"
 [ -r "$CONFIG" ] && . "$CONFIG"
 
-ROOT="${STATION_PHONE_ROOT:-$HOME/storage/shared/Download/AudienceOfOne}"
+ROOT="${STATION_PHONE_ROOT:-$HOME/.local/share/audience-of-one-phone/transport}"
+MEDIA_ROOT="${STATION_CALLIN_MEDIA_ROOT:-$HOME/storage/shared/Download/AudienceOfOne}"
+export STATION_PHONE_EVENT_SOCKET="${STATION_PHONE_EVENT_SOCKET:-$HOME/.local/state/audience-of-one-phone/events.sock}"
 OUTBOX="$ROOT/${STATION_CALLIN_OUTBOX:-call-in-outbox}"
 WORK_DIR="${STATION_CALLIN_WORK:-call-in-work}"
 RECORD_SECONDS="${STATION_CALLIN_SECONDS:-8}"
@@ -21,7 +23,7 @@ B64_PART=""
 
 log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
 
-mkdir -p "$OUTBOX" "$ROOT/$WORK_DIR" "$(dirname "$LOCK")"
+mkdir -p "$OUTBOX" "$MEDIA_ROOT/$WORK_DIR" "$(dirname "$LOCK")"
 
 # single-flight: a second ring while recording is ignored
 if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
@@ -37,11 +39,11 @@ trap cleanup EXIT
 
 TS=$(date +%s%3N 2>/dev/null)
 case "$TS" in *N*|"") TS="$(date +%s)000";; esac
-M4A="$ROOT/$WORK_DIR/$TS.m4a"
+M4A="$MEDIA_ROOT/$WORK_DIR/$TS.m4a"
 
 # The recorder writes relative to shared Downloads; derive its root from ours.
-case "$ROOT" in
-    */Download/*) RECORD_ROOT="${ROOT##*/Download/}" ;;
+case "$MEDIA_ROOT" in
+    */Download/*) RECORD_ROOT="${MEDIA_ROOT##*/Download/}" ;;
     *) RECORD_ROOT="AudienceOfOne" ;;
 esac
 
@@ -85,6 +87,17 @@ B64_PART=""
 rm -f "$M4A"
 M4A=""
 log "staged $B64"
+python3 - "$TS" <<'PY' >/dev/null 2>&1 || true
+import os, socket, sys
+target = os.path.expanduser(os.environ.get(
+    "STATION_PHONE_EVENT_SOCKET", "~/.local/state/audience-of-one-phone/events.sock"
+))
+client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+try:
+    client.sendto(("call-in:" + sys.argv[1]).encode(), target)
+finally:
+    client.close()
+PY
 
 # confirmation cue: one long buzz = the clip is on its way
 termux-vibrate -d 300 >/dev/null 2>&1 || true

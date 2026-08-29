@@ -9,7 +9,12 @@ import hmac
 import json
 import os
 import secrets
+import shutil
+import socket
+import subprocess
 import tempfile
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -17,6 +22,7 @@ from typing import Any
 
 MAX_BODY_BYTES = 512_000
 MAX_READ_LINES = 1_000
+MAX_WAIT_SECONDS = 30.0
 
 
 class TransportError(ValueError):
@@ -54,16 +60,192 @@ def atomic_write(path: Path, content: str) -> None:
             pass
 
 
+class EventBus:
+    """One in-process edge trigger for sleepers on both sides of the tunnel."""
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.sequence = 0
+        self.event = "startup"
+
+    def publish(self, event: str) -> int:
+        with self.condition:
+            self.sequence += 1
+            self.event = event
+            self.condition.notify_all()
+            return self.sequence
+
+    def wait(self, after: int, timeout: float) -> dict[str, Any]:
+        with self.condition:
+            if self.sequence <= after:
+                self.condition.wait(timeout)
+            return {"sequence": self.sequence, "event": self.event}
+
+
+class PowerLeaseManager:
+    """Hold Termux's wakelock only while named, expiring work is active."""
+
+    def __init__(self, state_path: Path):
+        self.state_path = state_path
+        self.lock = threading.Lock()
+        self.leases: dict[str, float] = {}
+        self.timer: threading.Timer | None = None
+        self.owns_wakelock = False
+        self.supported = bool(
+            shutil.which("termux-wake-lock") and shutil.which("termux-wake-unlock")
+        )
+
+    def _command(self, command: str) -> bool:
+        if not self.supported:
+            return False
+        try:
+            return subprocess.run(
+                [command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def _live(self, now: float | None = None) -> dict[str, float]:
+        moment = time.time() if now is None else now
+        return {name: expiry for name, expiry in self.leases.items() if expiry > moment}
+
+    def _write_state_locked(self) -> None:
+        atomic_write(self.state_path, json.dumps({
+            "version": 1,
+            "wakelock": self.owns_wakelock,
+            "supported": self.supported,
+            "updated_at": int(time.time()),
+            "leases": self.leases,
+        }, separators=(",", ":")) + "\n")
+
+    def _schedule_locked(self) -> None:
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        if not self.leases:
+            return
+        delay = max(0.05, min(self.leases.values()) - time.time())
+        self.timer = threading.Timer(delay, self._expire)
+        self.timer.daemon = True
+        self.timer.start()
+
+    def _expire(self) -> None:
+        with self.lock:
+            self.leases = self._live()
+            if not self.leases and self.owns_wakelock:
+                self._command("termux-wake-unlock")
+                self.owns_wakelock = False
+            self._write_state_locked()
+            self._schedule_locked()
+
+    def set(self, lease_id: str, action: str, ttl_seconds: float = 0) -> dict[str, Any]:
+        if not re_full_safe_id(lease_id):
+            raise TransportError("lease_id contains unsafe characters")
+        if action not in {"acquire", "renew", "release", "status"}:
+            raise TransportError("lease action must be acquire, renew, release, or status")
+        with self.lock:
+            self.leases = self._live()
+            if action in {"acquire", "renew"}:
+                if not 1 <= ttl_seconds <= 14_400:
+                    raise TransportError("lease ttl_seconds must be from 1 to 14400")
+                self.leases[lease_id] = time.time() + ttl_seconds
+                if not self.owns_wakelock:
+                    self.owns_wakelock = self._command("termux-wake-lock")
+            elif action == "release":
+                self.leases.pop(lease_id, None)
+                if not self.leases and self.owns_wakelock:
+                    self._command("termux-wake-unlock")
+                    self.owns_wakelock = False
+            self._write_state_locked()
+            self._schedule_locked()
+            return {
+                "lease_id": lease_id,
+                "action": action,
+                "wakelock": self.owns_wakelock,
+                "supported": self.supported,
+                "expires_at": self.leases.get(lease_id, 0),
+                "active_leases": sorted(self.leases),
+            }
+
+    def close(self) -> None:
+        with self.lock:
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+            if self.owns_wakelock:
+                self._command("termux-wake-unlock")
+                self.owns_wakelock = False
+            self.leases.clear()
+            self._write_state_locked()
+
+
+def re_full_safe_id(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and len(value) <= 180 and all(
+        character.isalnum() or character in "._:-" for character in value
+    )
+
+
 class StationMCPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], *, root: Path, token: str,
-                 location_id: str):
+                 location_id: str, event_socket: Path | None = None,
+                 event_fifo: Path | None = None,
+                 power_state: Path | None = None):
         super().__init__(address, StationMCPHandler)
         self.root = root.resolve()
         self.token = token
         self.location_id = location_id
         self.sessions: set[str] = set()
+        self.events = EventBus()
+        self.event_fifo = event_fifo or (self.root / ".player-events")
+        self.event_socket = event_socket or (self.root / ".runtime-events.sock")
+        self.power = PowerLeaseManager(power_state or (self.root / "power-leases.json"))
+        self._event_stop = threading.Event()
+        self._event_listener = threading.Thread(target=self._listen_events, daemon=True)
+        self._event_listener.start()
+
+    def _listen_events(self) -> None:
+        self.event_socket.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.event_socket.unlink()
+        except FileNotFoundError:
+            pass
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            listener.bind(str(self.event_socket))
+            listener.settimeout(1.0)
+            while not self._event_stop.is_set():
+                try:
+                    payload = listener.recv(512).decode("utf-8", errors="replace").strip()
+                except socket.timeout:
+                    continue
+                self.publish_event(payload or "local")
+        finally:
+            listener.close()
+            try:
+                self.event_socket.unlink()
+            except FileNotFoundError:
+                pass
+
+    def publish_event(self, event: str) -> None:
+        self.events.publish(event[:200])
+        try:
+            descriptor = os.open(self.event_fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            return
+        try:
+            os.write(descriptor, (event[:200] + "\n").encode("utf-8"))
+        finally:
+            os.close(descriptor)
+
+    def server_close(self) -> None:
+        self._event_stop.set()
+        self.power.close()
+        super().server_close()
+        if self._event_listener.is_alive():
+            self._event_listener.join(timeout=1.2)
 
 
 class StationMCPHandler(BaseHTTPRequestHandler):
@@ -167,12 +349,37 @@ class StationMCPHandler(BaseHTTPRequestHandler):
     def _tool(self, tool: str, arguments: dict[str, Any]) -> str:
         if arguments.get("location_id") != self.server.location_id:
             raise TransportError("unknown storage location")
+        if tool == "station_power_lease":
+            result = self.server.power.set(
+                str(arguments.get("lease_id") or ""),
+                str(arguments.get("action") or "status"),
+                float(arguments.get("ttl_seconds") or 0),
+            )
+            return json.dumps(result, separators=(",", ":"))
+        if tool == "station_wait_event":
+            after = arguments.get("after", 0)
+            timeout = arguments.get("timeout_seconds", 25.0)
+            if not isinstance(after, int) or after < 0:
+                raise TransportError("after must be a non-negative integer")
+            if not isinstance(timeout, (int, float)) or not 0 <= timeout <= MAX_WAIT_SECONDS:
+                raise TransportError("timeout_seconds is outside the supported range")
+            return json.dumps(self.server.events.wait(after, float(timeout)), separators=(",", ":"))
         path = safe_path(self.server.root, arguments.get("path", ""))
         if tool == "android_write_file":
             content = arguments.get("content")
             if not isinstance(content, str):
                 raise TransportError("content must be a string")
             atomic_write(path, content)
+            relative = path.relative_to(self.server.root)
+            fader_ready = bool(
+                relative.parts
+                and relative.parts[0] == "station-fader-inbox"
+                and path.suffix == ".request"
+            )
+            if fader_ready:
+                remote_id = path.name.split(".", 1)[0]
+                self.server.power.set(f"delivery:{remote_id}", "acquire", 180)
+                self.server.publish_event(f"fader:{remote_id}")
             return "written"
         if tool == "android_append_file":
             content = arguments.get("content")
@@ -183,6 +390,23 @@ class StationMCPHandler(BaseHTTPRequestHandler):
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
+            relative = path.relative_to(self.server.root)
+            queue_ready = bool(
+                relative.parts
+                and relative.parts[0] in {"station-inbox", "station-music-inbox"}
+                and "END." in content
+            )
+            fader_ready = bool(
+                relative.parts
+                and relative.parts[0] == "station-fader-inbox"
+                and path.suffix == ".request"
+            )
+            if queue_ready or fader_ready:
+                remote_id = path.name.split(".", 1)[0]
+                self.server.power.set(f"delivery:{remote_id}", "acquire", 180)
+                self.server.publish_event(
+                    f"{'fader' if fader_ready else 'queue'}:{remote_id}"
+                )
             return "appended"
         if tool == "android_delete_file":
             try:
@@ -236,6 +460,21 @@ def parser() -> argparse.ArgumentParser:
                             "STATION_PHONE_MCP_PID_FILE",
                             "~/.local/state/audience-of-one-phone/mcp.pid",
                         )).expanduser())
+    result.add_argument("--event-socket", type=Path,
+                        default=Path(os.environ.get(
+                            "STATION_PHONE_EVENT_SOCKET",
+                            "~/.local/state/audience-of-one-phone/events.sock",
+                        )).expanduser())
+    result.add_argument("--event-fifo", type=Path,
+                        default=Path(os.environ.get(
+                            "STATION_PHONE_EVENT_FIFO",
+                            "~/.local/state/audience-of-one-phone/player.events",
+                        )).expanduser())
+    result.add_argument("--power-state", type=Path,
+                        default=Path(os.environ.get(
+                            "STATION_PHONE_POWER_STATE",
+                            "~/.local/state/audience-of-one-phone/power-leases.json",
+                        )).expanduser())
     return result
 
 
@@ -265,6 +504,9 @@ def main() -> int:
         server = StationMCPServer(
             (arguments.bind, arguments.port), root=arguments.root,
             token=token, location_id=arguments.location_id,
+            event_socket=arguments.event_socket,
+            event_fifo=arguments.event_fifo,
+            power_state=arguments.power_state,
         )
         try:
             server.serve_forever(poll_interval=0.25)

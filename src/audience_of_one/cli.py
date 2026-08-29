@@ -1291,6 +1291,7 @@ def command_call_in(args: argparse.Namespace) -> int:
     except (station_config.ConfigError, PhoneError, CallInError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
+    event_sequence = 0
     while True:
         try:
             for event in watcher.poll_once():
@@ -1305,6 +1306,11 @@ def command_call_in(args: argparse.Namespace) -> int:
         if args.once:
             return 0
         try:
+            event = watcher.transport.wait_event(
+                event_sequence, min(30.0, max(1.0, interval * 5))
+            )
+            event_sequence = int(event.get("sequence") or event_sequence)
+        except PhoneError:
             time.sleep(interval)
         except KeyboardInterrupt:
             return 0

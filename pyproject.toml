@@ -53,7 +53,6 @@ where = ["src"]
 "share/audience-of-one/android/termux" = [
   "android/termux/install.sh",
   "android/termux/station-call-in-record.sh",
-  "android/termux/station-call-in-watch.sh",
   "android/termux/station-phone",
   "android/termux/station-phone-player.sh",
   "android/termux/station_focus_receipt.py",
@@ -78,6 +77,7 @@ where = ["src"]
 ]
 "share/audience-of-one/android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol" = [
   "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/FocusActivity.java",
+  "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/FaderActivity.java",
   "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/RecordActivity.java",
   "android/focus-helper/app/src/main/java/io/github/audienceofone/djcontrol/RecorderService.java",
 ]

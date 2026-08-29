@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import os
+import base64
 import re
+import socket
 import tempfile
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -21,6 +24,61 @@ STATES = {
 }
 SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 SAFE_STATE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+PHONE_ROOT = os.path.expanduser(os.environ.get(
+    "STATION_PHONE_ROOT", "~/.local/share/audience-of-one-phone/transport"
+))
+MEDIA_ROOT = os.path.expanduser(os.environ.get(
+    "STATION_CALLIN_MEDIA_ROOT", "~/storage/shared/Download/AudienceOfOne"
+))
+EVENT_SOCKET = os.path.expanduser(os.environ.get(
+    "STATION_PHONE_EVENT_SOCKET", "~/.local/state/audience-of-one-phone/events.sock"
+))
+
+
+def notify(event: str) -> None:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        client.sendto(event.encode("utf-8"), EVENT_SOCKET)
+    except OSError:
+        pass
+    finally:
+        client.close()
+
+
+def stage_call_in(request_id: str) -> None:
+    match = re.fullmatch(r"callin-([0-9]{10,18})", request_id)
+    if not match:
+        return
+    clip_id = match.group(1)
+    source = os.path.join(MEDIA_ROOT, "call-in-work", f"{clip_id}.m4a")
+    for _attempt in range(10):
+        if os.path.getsize(source) if os.path.exists(source) else 0:
+            break
+        time.sleep(0.1)
+    else:
+        return
+    outbox = os.path.join(PHONE_ROOT, "call-in-outbox")
+    os.makedirs(outbox, exist_ok=True)
+    with open(source, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
+    wrapped = "\n".join(
+        encoded[offset:offset + 1024] for offset in range(0, len(encoded), 1024)
+    ) + "\nEND.\n"
+    target = os.path.join(outbox, f"{clip_id}.b64")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{clip_id}.", dir=outbox, text=True)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+            handle.write(wrapped)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        os.unlink(source)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    notify(f"call-in:{clip_id}")
 
 
 def publish(target: str, request_id: str, state: str, result: int, updated_at: int) -> None:
@@ -71,6 +129,8 @@ class ReceiptHandler(BaseHTTPRequestHandler):
                 int(fields.get("result", ["0"])[0]),
                 int(fields.get("updated_at", ["0"])[0]),
             )
+            if self.path == "/record" and fields.get("state", [""])[0] == "saved":
+                stage_call_in(fields.get("request_id", [""])[0])
         except (UnicodeDecodeError, ValueError):
             self.send_error(400)
             return

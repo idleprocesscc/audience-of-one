@@ -6,6 +6,7 @@ import argparse
 import fcntl
 import json
 import os
+import select
 import signal
 import sys
 import time
@@ -19,6 +20,85 @@ from .adapters import music_client
 from .adapters.spotify import SpotifyError
 from .desktop import DesktopEngine, PlayoutError
 from .transactions import Journal
+
+
+class StateChangeWaiter:
+    """Sleep until the rundown directory changes, with a portable fallback."""
+
+    def __init__(self, queue_path: Path, *, sleep: Callable[[float], None] = time.sleep):
+        self.queue_path = queue_path
+        self.sleep = sleep
+        self.queue_path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.kqueue: Any | None = None
+        self.directory_fd: int | None = None
+        self.read_fd: int | None = None
+        self.write_fd: int | None = None
+        if not hasattr(select, "kqueue"):
+            return
+        try:
+            self.directory_fd = os.open(self.queue_path, os.O_RDONLY)
+            self.read_fd, self.write_fd = os.pipe()
+            os.set_blocking(self.read_fd, False)
+            os.set_blocking(self.write_fd, False)
+            self.kqueue = select.kqueue()
+            vnode_flags = (
+                select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND | select.KQ_NOTE_ATTRIB
+                | select.KQ_NOTE_LINK | select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE
+            )
+            self.kqueue.control([
+                select.kevent(
+                    self.directory_fd,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                    fflags=vnode_flags,
+                ),
+                select.kevent(
+                    self.read_fd,
+                    filter=select.KQ_FILTER_READ,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                ),
+            ], 0, 0)
+        except OSError:
+            self.close()
+
+    def wake(self) -> None:
+        if self.write_fd is None:
+            return
+        try:
+            os.write(self.write_fd, b"w")
+        except (BlockingIOError, OSError):
+            pass
+
+    def wait(self, timeout: float) -> bool:
+        timeout = max(0.0, float(timeout))
+        if self.kqueue is None:
+            self.sleep(timeout)
+            return False
+        try:
+            events = self.kqueue.control(None, 8, timeout)
+        except OSError:
+            self.sleep(min(timeout, 1.0))
+            return False
+        if self.read_fd is not None:
+            try:
+                while os.read(self.read_fd, 4096):
+                    pass
+            except (BlockingIOError, OSError):
+                pass
+        return bool(events)
+
+    def close(self) -> None:
+        if self.kqueue is not None:
+            self.kqueue.close()
+            self.kqueue = None
+        for attribute in ("directory_fd", "read_fd", "write_fd"):
+            descriptor = getattr(self, attribute)
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                setattr(self, attribute, None)
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -68,17 +148,22 @@ class StationScheduler:
         engine: Any | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.time,
+        waiter: Any | None = None,
     ):
         self.config = config
         self.state_path = state_path
         self.settings = config.get("scheduler") or {}
         self.poll_seconds = float(self.settings.get("poll_seconds", 1.0))
+        self.idle_wait_seconds = float(self.settings.get("idle_wait_seconds", 60.0))
         self.prepare_window = float(self.settings.get("prepare_window_seconds", 75.0))
         self.boundary_lead = float(self.settings.get("boundary_lead_seconds", 1.0))
         self.music = music or music_client(config, state_path)
         self.engine = engine or DesktopEngine(config, state_path, spotify=self.music)
         self.sleep = sleep
         self.clock = clock
+        self.waiter = waiter or StateChangeWaiter(
+            self.state_path / "queue", sleep=self.sleep
+        )
         self.journal = Journal(state_path)
         self.prepared: tuple[dict, dict, dict] | None = None
         self.active_uri: str | None = None
@@ -319,6 +404,7 @@ class StationScheduler:
 
             def stop(_signum: int, _frame: Any) -> None:
                 self.stopping = True
+                self.waiter.wake()
 
             signal.signal(signal.SIGTERM, stop)
             signal.signal(signal.SIGINT, stop)
@@ -332,8 +418,13 @@ class StationScheduler:
                         self.last_action = "loop-error"
                         self.log(f"loop error: {error}")
                     self._publish_status(running=True, state="running")
-                    self.sleep(self.poll_seconds)
+                    if self.last_action in {"idle", "after:stopped", "after:stopped-natural"} \
+                            and self.after_mode == "autoplay":
+                        self.waiter.wait(self.idle_wait_seconds)
+                    else:
+                        self.sleep(self.poll_seconds)
             finally:
+                self.waiter.close()
                 self.last_action = "stopped"
                 self._publish_status(running=False, state="stopped")
                 self.log("scheduler stopped")

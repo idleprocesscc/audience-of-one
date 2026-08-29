@@ -143,7 +143,6 @@ class PhoneRuntimeTransportTests(unittest.TestCase):
             ROOT / "android" / "termux" / "station_phone_mcp.py",
             ROOT / "android" / "termux" / "station_phone_mpv.py",
             ROOT / "android" / "termux" / "station-call-in-record.sh",
-            ROOT / "android" / "termux" / "station-call-in-watch.sh",
             ROOT / "android" / "focus-helper" / "app" / "src" / "main"
             / "java" / "io" / "github" / "audienceofone" / "djcontrol"
             / "FocusActivity.java",
@@ -188,12 +187,37 @@ class PhoneRuntimeTransportTests(unittest.TestCase):
             / "java" / "io" / "github" / "audienceofone" / "djcontrol"
             / "RecordActivity.java"
         ).read_text(encoding="utf-8")
-        watcher = (
-            ROOT / "android" / "termux" / "station-call-in-watch.sh"
+        receipt = (
+            ROOT / "android" / "termux" / "station_focus_receipt.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"call-in-work/" + timestamp + ".m4a"', activity)
-        self.assertIn('for clip in "$WORK_DIR"/*.m4a', watcher)
-        self.assertIn('mv "$clip" "$claimed"', watcher)
+        self.assertIn('f"{clip_id}.m4a"', receipt)
+        self.assertIn('notify(f"call-in:{clip_id}")', receipt)
+
+    def test_idle_runtime_blocks_on_private_events_without_a_permanent_wakelock(self):
+        player = (ROOT / "android" / "termux" / "station-phone-player.sh").read_text()
+        installer = (ROOT / "android" / "termux" / "install.sh").read_text()
+        self.assertIn('read -r -t "$HEARTBEAT_SECONDS"', player)
+        self.assertIn("$HOME/.local/share/audience-of-one-phone/transport", player)
+        boot = installer.split("BOOT_FILE", 1)[-1]
+        self.assertNotIn("printf 'termux-wake-lock", boot)
+
+    def test_transport_event_wait_wakes_after_a_complete_queue_item(self):
+        initial = self.transport.wait_event(0, 0)
+        sequence = initial["sequence"]
+        self.transport.write("station-inbox/event.b64", "chunk")
+        quiet = self.transport.wait_event(sequence, 0.01)
+        self.assertEqual(quiet["sequence"], sequence)
+        self.transport.write("station-inbox/event.b64", "\nEND.\n", append=True)
+        woke = self.transport.wait_event(sequence, 0.1)
+        self.assertGreater(woke["sequence"], sequence)
+        self.assertEqual(woke["event"], "queue:event")
+
+    def test_phone_power_lease_is_named_and_expiring(self):
+        acquired = self.transport.lease("test:voice", "acquire", 5)
+        self.assertIn("test:voice", acquired["active_leases"])
+        released = self.transport.lease("test:voice", "release")
+        self.assertNotIn("test:voice", released["active_leases"])
 
     def test_phone_runtime_and_install_handoff_expose_short_human_controls(self):
         control = (ROOT / "android" / "termux" / "station-phone").read_text()

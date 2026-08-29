@@ -241,6 +241,35 @@ class MCPPhoneTransport:
         })
         return raw.splitlines()
 
+    def lease(self, lease_id: str, action: str, ttl_seconds: float = 0) -> dict[str, Any]:
+        raw = self.call("station_power_lease", {
+            "location_id": self.location_id,
+            "lease_id": lease_id,
+            "action": action,
+            "ttl_seconds": ttl_seconds,
+        })
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise PhoneError("phone power lease returned invalid JSON") from error
+        if not isinstance(result, dict):
+            raise PhoneError("phone power lease returned invalid state")
+        return result
+
+    def wait_event(self, after: int = 0, timeout_seconds: float = 25.0) -> dict[str, Any]:
+        raw = self.call("station_wait_event", {
+            "location_id": self.location_id,
+            "after": after,
+            "timeout_seconds": timeout_seconds,
+        })
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise PhoneError("phone event wait returned invalid JSON") from error
+        if not isinstance(result, dict) or not isinstance(result.get("sequence"), int):
+            raise PhoneError("phone event wait returned invalid state")
+        return result
+
     def _path(self, path: str) -> str:
         relative = PurePosixPath(path)
         if relative.is_absolute() or ".." in relative.parts:
@@ -277,6 +306,13 @@ def _events(raw: str) -> dict[str, dict[str, Any]]:
         if isinstance(event, str) and event not in found:
             found[event] = row
     return found
+
+
+def _power_lease(transport: Any, lease_id: str, action: str, ttl: float = 0) -> None:
+    """Use the current receiver lease protocol without breaking test/legacy transports."""
+    lease = getattr(transport, "lease", None)
+    if callable(lease):
+        lease(lease_id, action, ttl)
 
 
 class PhoneVoicePlayer:
@@ -398,6 +434,7 @@ class PhoneVoicePlayer:
         self, path: Path, duration: float, *, remote_id: str, duck: bool = True
     ) -> dict[str, Any]:
         remote_id = _safe_remote_id(remote_id)
+        delivery_lease = f"delivery:{remote_id}"
         ack_path = f"{self.ack_dir}/{remote_id}.jsonl"
         try:
             existing = _events(self.transport.read(ack_path))
@@ -422,34 +459,45 @@ class PhoneVoicePlayer:
                 "refusing automatic replay",
                 existing,
             )
-        staged = self._stage_and_trigger(path, remote_id, duck=duck)
-        started_deadline = self.monotonic() + self.start_timeout
-        receipts: dict[str, dict[str, Any]] = {}
-        while self.monotonic() < started_deadline:
-            try:
-                receipts = _events(self.transport.read(staged["ack_path"]))
-            except PhoneError:
-                receipts = {}
-            failed = receipts.get("voice_failed") or receipts.get("voice_expired")
-            if failed:
-                raise PhoneError(
-                    f"phone voice failed: {failed.get('detail') or failed.get('event')}"
-                )
-            if "voice_started" in receipts:
-                break
-            self.sleep(self.poll_interval)
-        if "voice_started" not in receipts:
-            raise PhoneError("timed out waiting for phone voice_started")
-
-        finish_deadline = self.monotonic() + max(1.0, float(duration)) + self.finish_margin
-        receipts = self._wait(staged["ack_path"], finish_deadline)
-        if "voice_finished" not in receipts:
-            raise PhoneUncertainError(
-                "timed out waiting for phone voice_finished; refusing automatic replay",
-                receipts,
+        try:
+            _power_lease(
+                self.transport,
+                delivery_lease, "acquire",
+                self.start_timeout + max(1.0, float(duration)) + self.finish_margin + 10,
             )
+            staged = self._stage_and_trigger(path, remote_id, duck=duck)
+            started_deadline = self.monotonic() + self.start_timeout
+            receipts: dict[str, dict[str, Any]] = {}
+            while self.monotonic() < started_deadline:
+                try:
+                    receipts = _events(self.transport.read(staged["ack_path"]))
+                except PhoneError:
+                    receipts = {}
+                failed = receipts.get("voice_failed") or receipts.get("voice_expired")
+                if failed:
+                    raise PhoneError(
+                        f"phone voice failed: {failed.get('detail') or failed.get('event')}"
+                    )
+                if "voice_started" in receipts:
+                    break
+                self.sleep(self.poll_interval)
+            if "voice_started" not in receipts:
+                raise PhoneError("timed out waiting for phone voice_started")
 
-        return self._result(staged, receipts)
+            finish_deadline = self.monotonic() + max(1.0, float(duration)) + self.finish_margin
+            receipts = self._wait(staged["ack_path"], finish_deadline)
+            if "voice_finished" not in receipts:
+                raise PhoneUncertainError(
+                    "timed out waiting for phone voice_finished; refusing automatic replay",
+                    receipts,
+                )
+
+            return self._result(staged, receipts)
+        finally:
+            try:
+                _power_lease(self.transport, delivery_lease, "release")
+            except PhoneError:
+                pass
 
 
 class PhoneMusicPlayer:
@@ -570,6 +618,7 @@ class PhoneMusicPlayer:
 
     def play(self, stream: dict[str, Any], *, remote_id: str) -> dict[str, Any]:
         remote_id = _safe_remote_id(remote_id)
+        delivery_lease = f"delivery:{remote_id}"
         ack_path = f"{self.ack_dir}/{remote_id}.jsonl"
         url = stream.get("url")
         if not isinstance(url, str):
@@ -600,25 +649,39 @@ class PhoneMusicPlayer:
                 "previous phone music attempt started without position evidence; "
                 "refusing automatic replay"
             )
-        staged = self._stage(stream, remote_id)
-        deadline = self.monotonic() + self.start_timeout
-        receipts: dict[str, dict[str, Any]] = {}
-        while self.monotonic() < deadline:
-            try:
-                receipts = _events(self.transport.read(ack_path))
-            except PhoneError:
-                receipts = {}
-            failed = receipts.get("track_failed")
-            if failed:
-                raise PhoneError(
-                    f"phone music failed: {failed.get('detail') or failed.get('event')}"
+        try:
+            _power_lease(
+                self.transport, delivery_lease, "acquire", self.start_timeout + 30
+            )
+            staged = self._stage(stream, remote_id)
+            deadline = self.monotonic() + self.start_timeout
+            receipts: dict[str, dict[str, Any]] = {}
+            while self.monotonic() < deadline:
+                try:
+                    receipts = _events(self.transport.read(ack_path))
+                except PhoneError:
+                    receipts = {}
+                failed = receipts.get("track_failed")
+                if failed:
+                    raise PhoneError(
+                        f"phone music failed: {failed.get('detail') or failed.get('event')}"
+                    )
+                if "track_started" in receipts and "track_position" in receipts:
+                    break
+                self.sleep(self.poll_interval)
+            if "track_started" not in receipts or "track_position" not in receipts:
+                raise PhoneError("timed out waiting for phone music position receipt")
+            duration_seconds = max(0, int(stream.get("duration_ms") or 0) // 1000)
+            if duration_seconds:
+                _power_lease(
+                    self.transport, "music-playback", "acquire", duration_seconds + 60
                 )
-            if "track_started" in receipts and "track_position" in receipts:
-                break
-            self.sleep(self.poll_interval)
-        if "track_started" not in receipts or "track_position" not in receipts:
-            raise PhoneError("timed out waiting for phone music position receipt")
-        return self._result(staged, receipts)
+            return self._result(staged, receipts)
+        finally:
+            try:
+                _power_lease(self.transport, delivery_lease, "release")
+            except PhoneError:
+                pass
 
 
 def phone_transport(data: dict[str, Any]) -> MCPPhoneTransport:

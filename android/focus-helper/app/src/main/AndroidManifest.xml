@@ -42,5 +42,11 @@
             android:name=".RecorderService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+        <activity
+            android:name=".FaderActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:finishOnTaskLaunch="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>

@@ -9,17 +9,21 @@ STATE="$HOME/.local/state/audience-of-one-phone"
 MCP_PIDFILE="$STATE/mcp.pid"
 PLAYER_PIDFILE="$STATE/player.pid"
 CALLIN_PIDFILE="$STATE/call-in.pid"
+FOCUS_PIDFILE="$STATE/focus.pid"
 MUSIC_PIDFILE="$STATE/music-mpv.pid"
 MUSIC_SOCKET="$STATE/music-mpv.sock"
 MUSIC_HELPER="$LIB/station_phone_mpv.py"
 LOG="$STATE/runtime.log"
 
 [ -r "$CONFIG" ] && . "$CONFIG"
-export STATION_PHONE_ROOT="${STATION_PHONE_ROOT:-$HOME/storage/shared/Download/AudienceOfOne}"
+export STATION_PHONE_ROOT="${STATION_PHONE_ROOT:-$HOME/.local/share/audience-of-one-phone/transport}"
 export STATION_PHONE_BIND="${STATION_PHONE_BIND:-127.0.0.1}"
 export STATION_PHONE_PORT="${STATION_PHONE_PORT:-8787}"
 export STATION_PHONE_LOCATION_ID="${STATION_PHONE_LOCATION_ID:-station}"
 export STATION_PHONE_TOKEN_FILE="${STATION_PHONE_TOKEN_FILE:-$HOME/.config/audience-of-one/phone-token}"
+export STATION_CALLIN_MEDIA_ROOT="${STATION_CALLIN_MEDIA_ROOT:-$HOME/storage/shared/Download/AudienceOfOne}"
+export STATION_PHONE_EVENT_SOCKET="${STATION_PHONE_EVENT_SOCKET:-$STATE/events.sock}"
+export STATION_PHONE_EVENT_FIFO="${STATION_PHONE_EVENT_FIFO:-$STATE/player.events}"
 
 mkdir -p "$STATE"
 
@@ -107,14 +111,6 @@ start_player() {
     nohup "$LIB/station-phone-player.sh" >> "$LOG" 2>&1 &
 }
 
-start_callin() {
-    [ "${STATION_CALLIN_ENABLED:-0}" = "1" ] || return 0
-    live_pid "$CALLIN_PIDFILE" station-call-in-watch.sh >/dev/null && return 0
-    rm -f "$CALLIN_PIDFILE"
-    nohup "$LIB/station-call-in-watch.sh" >> "$LOG" 2>&1 &
-    printf '%s\n' "$!" > "$CALLIN_PIDFILE"
-}
-
 stop_one() {
     local file="$1" pattern="$2" pid count
     pid=$(live_pid "$file" "$pattern" 2>/dev/null) || { rm -f "$file"; return 0; }
@@ -140,10 +136,8 @@ show_status() {
     else
         printf 'player=down\n'
     fi
-    if [ "${STATION_CALLIN_ENABLED:-0}" != "1" ]; then
-        printf 'callin=off\n'
-    elif live_pid "$CALLIN_PIDFILE" station-call-in-watch.sh >/dev/null; then
-        printf 'callin=up\n'
+    if live_pid "$FOCUS_PIDFILE" station_focus_receipt.py >/dev/null; then
+        printf 'callin=integrated\n'
     else
         printf 'callin=down\n'
     fi
@@ -152,6 +146,12 @@ show_status() {
         cat "$STATION_PHONE_ROOT/phone-health.json"
     else
         printf 'player_heartbeat=missing\n'
+    fi
+    if [ -s "$STATE/power-leases.json" ]; then
+        printf 'power_lease='
+        cat "$STATE/power-leases.json"
+    else
+        printf 'power_lease=idle\n'
     fi
     show_music_status
 }
@@ -180,10 +180,8 @@ fi
 
 case "$action" in
     start)
-        termux-wake-lock >/dev/null 2>&1 || true
         start_mcp
         start_player
-        start_callin
         wait_ready
         ;;
     status) show_status ;;

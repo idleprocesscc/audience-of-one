@@ -3,13 +3,18 @@
 
 set -u
 
-ROOT="${STATION_PHONE_ROOT:-$HOME/storage/shared/Download/AudienceOfOne}"
+ROOT="${STATION_PHONE_ROOT:-$HOME/.local/share/audience-of-one-phone/transport}"
 INBOX="$ROOT/station-inbox"
 MUSIC_INBOX="$ROOT/station-music-inbox"
 ACKS="$ROOT/station-acks"
 CLAIMED="$ROOT/.claimed"
 MUSIC_CLAIMED="$ROOT/.claimed-music"
 STALE="$ROOT/.stale"
+EXPIRED="$ROOT/.expired"
+FADER_INBOX="$ROOT/station-fader-inbox"
+FADER_CLAIMED="$ROOT/.claimed-fader"
+FADER_ACKS="$ROOT/station-fader-acks"
+FADER_STATE="$HOME/.local/state/audience-of-one-phone/fader.state"
 WORK="$HOME/.local/state/audience-of-one-phone/work"
 LOG="$HOME/.local/state/audience-of-one-phone/player.log"
 HEALTH="$ROOT/phone-health.json"
@@ -22,12 +27,19 @@ FOCUS_PACKAGE="io.github.audienceofone.djcontrol"
 MUSIC_HELPER="$HOME/.local/lib/audience-of-one/station_phone_mpv.py"
 MUSIC_SOCKET="$HOME/.local/state/audience-of-one-phone/music-mpv.sock"
 MUSIC_PIDFILE="$HOME/.local/state/audience-of-one-phone/music-mpv.pid"
-POLL_SECONDS="${STATION_PHONE_POLL_SECONDS:-0.5}"
+EVENT_FIFO="${STATION_PHONE_EVENT_FIFO:-$HOME/.local/state/audience-of-one-phone/player.events}"
+HEARTBEAT_SECONDS="${STATION_PHONE_HEARTBEAT_SECONDS:-60}"
+SAFETY_RESCAN_SECONDS="${STATION_PHONE_RESCAN_SECONDS:-900}"
 PLAYBACK_SETTLE_SECONDS="${STATION_PHONE_PLAYBACK_SETTLE_SECONDS:-0.25}"
 
 mkdir -p "$INBOX" "$MUSIC_INBOX" "$ACKS" "$CLAIMED" "$MUSIC_CLAIMED" \
-    "$STALE" "$WORK" \
+    "$STALE" "$EXPIRED" "$FADER_INBOX" "$FADER_CLAIMED" "$FADER_ACKS" "$WORK" \
     "$(dirname "$LOG")" "$(dirname "$PIDFILE")"
+if [ -e "$EVENT_FIFO" ] && [ ! -p "$EVENT_FIFO" ]; then
+    rm -f "$EVENT_FIFO"
+fi
+[ -p "$EVENT_FIFO" ] || mkfifo "$EVENT_FIFO"
+exec 9<>"$EVENT_FIFO"
 
 log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$1" >> "$LOG"; }
 
@@ -61,6 +73,172 @@ write_ack() {
 
 manifest_field() {
     sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
+}
+
+tombstone_capsule() {
+    local name="$1" event="$2" detail="$3"
+    printf 'event=%s\nat=%s\ndetail=%s\n' "$event" "$(date +%s)" "$detail" \
+        > "$EXPIRED/$name"
+    rm -f "$INBOX/$name.b64" "$INBOX/$name.capsule" "$INBOX/$name.integrity"
+    write_ack "$name" "$event" "$detail"
+}
+
+expire_due_capsules() {
+    local capsule name expires now
+    now=$(date +%s)
+    for capsule in "$INBOX"/*.capsule; do
+        [ -e "$capsule" ] || continue
+        [ "$(manifest_field "$capsule" ready)" = 1 ] || continue
+        name=$(safe_id "$(basename "$capsule" .capsule)")
+        expires=$(manifest_field "$capsule" expires_at)
+        if ! [[ "$expires" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            tombstone_capsule "$name" voice_failed capsule-invalid
+        elif awk -v now="$now" -v expires="$expires" \
+            'BEGIN { exit !(now > expires) }'; then
+            tombstone_capsule "$name" voice_expired capsule-expired
+        fi
+    done
+}
+
+capsule_allows_playout() {
+    local name="$1" capsule="$INBOX/$1.capsule" expires now
+    if [ -f "$EXPIRED/$name" ]; then
+        rm -f "$INBOX/$name.b64" "$capsule" "$INBOX/$name.integrity"
+        return 1
+    fi
+    [ -f "$capsule" ] || return 0
+    [ "$(manifest_field "$capsule" ready)" = 1 ] || return 1
+    expires=$(manifest_field "$capsule" expires_at)
+    if ! [[ "$expires" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        tombstone_capsule "$name" voice_failed capsule-invalid
+        return 1
+    fi
+    now=$(date +%s)
+    if awk -v now="$now" -v expires="$expires" 'BEGIN { exit !(now > expires) }'; then
+        tombstone_capsule "$name" voice_expired capsule-expired
+        return 1
+    fi
+}
+
+phone_music_volume() {
+    command -v termux-volume >/dev/null 2>&1 || return 1
+    termux-volume 2>/dev/null | awk '
+        /"stream"[[:space:]]*:[[:space:]]*"music"/ { music=1; next }
+        music && /"volume"[[:space:]]*:/ && ! /max_volume/ {
+            line=$0; gsub(/[^0-9]/, "", line); volume=line; next
+        }
+        music && /"max_volume"[[:space:]]*:/ {
+            line=$0; gsub(/[^0-9]/, "", line)
+            if (volume != "" && line != "") { print volume, line; exit }
+        }
+    '
+}
+
+phone_volume_percent() {
+    awk -v value="$1" -v maximum="$2" \
+        'BEGIN { printf "%d", maximum > 0 ? (value*100/maximum)+0.5 : 0 }'
+}
+
+phone_fade_raw() {
+    local from="$1" target="$2" seconds="$3" steps delay step value duration_ms actual
+    local snapshot maximum target_percent
+    duration_ms=$(awk -v s="$seconds" 'BEGIN { printf "%d", s*1000+0.5 }')
+    snapshot=$(phone_music_volume 2>/dev/null) || snapshot=""
+    maximum=$(printf '%s\n' "$snapshot" | awk '{print $2}')
+    if [ -n "$maximum" ] && [ "$maximum" -gt 0 ] 2>/dev/null; then
+        target_percent=$(phone_volume_percent "$target" "$maximum")
+    else
+        target_percent=-1
+    fi
+    if /system/bin/am start --user 0 -W --activity-no-animation \
+        -n "$FOCUS_PACKAGE/.FaderActivity" \
+        --ei target_percent "$target_percent" --ei duration_ms "$duration_ms" \
+        >/dev/null 2>>"$LOG"; then
+        delay=$(awk -v s="$seconds" 'BEGIN { print s+0.25 }')
+        sleep "$delay"
+        actual=$(phone_music_volume 2>/dev/null | awk '{print $1}')
+        if [ -n "$actual" ] && awk -v a="$actual" -v t="$target" \
+            'BEGIN { d=a-t; if(d<0)d=-d; exit !(d<=1) }'; then
+            return 0
+        fi
+    fi
+    steps=$(awk -v s="$seconds" 'BEGIN { n=int(s*6+0.5); if(n<1)n=1; if(n>30)n=30; print n }')
+    delay=$(awk -v s="$seconds" -v n="$steps" 'BEGIN { print n ? s/n : 0 }')
+    for ((step=1; step<=steps; step++)); do
+        value=$(awk -v f="$from" -v t="$target" -v i="$step" -v n="$steps" \
+            'BEGIN { printf "%d", f+(t-f)*i/n+0.5 }')
+        termux-volume music "$value" >/dev/null 2>&1 || return 1
+        [ "$step" -eq "$steps" ] || sleep "$delay"
+    done
+}
+
+write_fader_ack() {
+    local id="$1" event="$2" ok="$3" from="$4" to="$5" original="$6" detail="$7"
+    [[ "$from" =~ ^[0-9]+$ ]] || from=0
+    [[ "$to" =~ ^[0-9]+$ ]] || to=0
+    [[ "$original" =~ ^[0-9]+$ ]] || original=0
+    printf '{"id":"%s","event":"%s","ok":%s,"at":%s,"from_percent":%s,"to_percent":%s,"original_percent":%s,"detail":"%s"}\n' \
+        "$id" "$event" "$ok" "$(date +%s)" "$from" "$to" "$original" \
+        "$(printf '%s' "$detail" | tr -cd 'A-Za-z0-9._ -')" > "$FADER_ACKS/$id.json"
+}
+
+handle_fader_request() {
+    local request="$1" id action target seconds snapshot current maximum from original
+    local target_raw target_percent steps delay step value actual actual_raw actual_max
+    id=$(safe_id "$(basename "$request" .request)")
+    action=$(manifest_field "$request" action)
+    target=$(manifest_field "$request" target)
+    seconds=$(manifest_field "$request" seconds)
+    [[ "$seconds" =~ ^[0-9]+([.][0-9]+)?$ ]] || seconds=0
+    snapshot=$(phone_music_volume) || snapshot=""
+    if [ -z "$snapshot" ]; then
+        write_fader_ack "$id" fader_failed false 0 0 0 termux-volume-unavailable
+        return 1
+    fi
+    read -r current maximum <<< "$snapshot"
+    from=$(phone_volume_percent "$current" "$maximum")
+    if [ "$action" = set ]; then
+        [[ "$target" =~ ^[0-9]+$ ]] && [ "$target" -le 100 ] || return 1
+        [ -s "$FADER_STATE" ] || printf 'raw=%s\nmax=%s\n' "$current" "$maximum" > "$FADER_STATE"
+        target_percent=$target
+        target_raw=$(awk -v p="$target" -v m="$maximum" 'BEGIN { printf "%d", p*m/100+0.5 }')
+    elif [ "$action" = restore ] && [ -s "$FADER_STATE" ]; then
+        original=$(manifest_field "$FADER_STATE" raw)
+        old_max=$(manifest_field "$FADER_STATE" max)
+        target_raw=$(awk -v v="$original" -v o="$old_max" -v m="$maximum" \
+            'BEGIN { printf "%d", o > 0 ? v*m/o+0.5 : v }')
+        target_percent=$(phone_volume_percent "$target_raw" "$maximum")
+    else
+        write_fader_ack "$id" fader_failed false "$from" "$from" 0 invalid-request
+        return 1
+    fi
+    original_percent=$(if [ -s "$FADER_STATE" ]; then \
+        phone_volume_percent "$(manifest_field "$FADER_STATE" raw)" \
+            "$(manifest_field "$FADER_STATE" max)"; else printf '%s' "$from"; fi)
+    phone_fade_raw "$current" "$target_raw" "$seconds" || true
+    actual=$(phone_music_volume) || actual=""
+    read -r actual_raw actual_max <<< "$actual"
+    actual_percent=$(phone_volume_percent "${actual_raw:-0}" "${actual_max:-1}")
+    if ! awk -v a="$actual_percent" -v t="$target_percent" \
+        'BEGIN { d=a-t; if(d<0)d=-d; exit !(d<=1) }'; then
+        write_fader_ack "$id" fader_failed false "$from" "$actual_percent" \
+            "$original_percent" target-not-applied
+        return 1
+    fi
+    [ "$action" = restore ] && rm -f "$FADER_STATE"
+    write_fader_ack "$id" fader_finished true "$from" "$actual_percent" \
+        "$original_percent" android-music-fader
+}
+
+process_fader_requests() {
+    local request claimed
+    for request in "$FADER_INBOX"/*.request; do
+        [ -e "$request" ] || continue
+        claimed="$FADER_CLAIMED/$(basename "$request")"
+        mv "$request" "$claimed" 2>/dev/null || continue
+        handle_fader_request "$claimed" || true
+        rm -f "$claimed"
+    done
 }
 
 music_process_alive() {
@@ -163,8 +341,9 @@ focus_hold() {
 focus_release() {
     local item="$1" request_id state
     request_id="$(safe_id "$item")-focus"
-    open_focus_uri "djfocus://release?request_id=$request_id" || return 1
-    for _ in $(seq 1 30); do
+    # The hold carries its own duration watchdog. Waiting for that receipt
+    # avoids opening a second background Activity just to release it.
+    for _ in $(seq 1 40); do
         state=$(focus_state || true)
         if printf '%s' "$state" | grep -Fq "request_id=$request_id" && \
            printf '%s' "$state" | grep -Eq 'state=(released|expired|destroyed)'; then
@@ -189,7 +368,8 @@ probe_duration() {
 play_clip() {
     local path="$1" item="$2" duck_enabled="$3" duration whole focus_held=0
     local duck_percent="${4:-35}" fade_down="${5:-0.8}" fade_up="${6:-1.0}"
-    local music_restore="" snapshot=""
+    local music_restore="" snapshot="" system_restore="" system_max="" system_target=""
+    local current=""
     duration=$(probe_duration "$path")
     whole=${duration%%.*}
     whole=$((10#$whole))
@@ -200,11 +380,25 @@ play_clip() {
             2>/dev/null || true)
         if [ -n "$music_restore" ] && music_fade "$duck_percent" "$fade_down"; then
             write_ack "$item" duck_started mpv-fader
-        elif focus_hold "$item" "$duration"; then
-            focus_held=1
-            write_ack "$item" duck_started audio-focus-may-duck
         else
-            write_ack "$item" duck_failed focus-unavailable
+            snapshot=$(phone_music_volume 2>/dev/null || true)
+            if [ -n "$snapshot" ]; then
+                read -r system_restore system_max <<< "$snapshot"
+                system_target=$(awk -v p="$duck_percent" -v m="$system_max" \
+                    'BEGIN { printf "%d", p*m/100+0.5 }')
+                if [ "${system_restore:-0}" -gt 0 ] 2>/dev/null && \
+                   phone_fade_raw "$system_restore" "$system_target" "$fade_down"; then
+                    write_ack "$item" duck_started system-music-fader
+                else
+                    system_restore=""
+                fi
+            fi
+            if [ -z "$system_restore" ] && focus_hold "$item" "$duration"; then
+                focus_held=1
+                write_ack "$item" duck_started audio-focus-may-duck
+            elif [ -z "$system_restore" ]; then
+                write_ack "$item" duck_failed focus-unavailable
+            fi
         fi
     fi
 
@@ -263,27 +457,45 @@ play_clip() {
         else
             write_ack "$item" duck_release_failed mpv-fader
         fi
+    elif [ -n "$system_restore" ]; then
+        current=$(phone_music_volume 2>/dev/null | awk '{print $1}')
+        if [ -n "$current" ] && phone_fade_raw "$current" "$system_restore" "$fade_up"; then
+            write_ack "$item" duck_finished system-music-fader
+        else
+            write_ack "$item" duck_release_failed system-music-fader
+        fi
     fi
     write_ack "$item" voice_finished phone-player
 }
 
 process_one() {
-    local source="$1" name claimed manifest expected_version expected_size expected_sha ready duck
+    local source="$1" name claimed manifest capsule expected_version expected_size expected_sha ready duck
     local decoded actual_size actual_sha duck_percent fade_down fade_up
     name=$(safe_id "$(basename "$source" .b64)")
     [ -n "$name" ] || return 0
     [ "$(tail -n 1 "$source" 2>/dev/null)" = "END." ] || return 0
+    capsule_allows_playout "$name" || return 0
     if grep -q '"event":"voice_finished"' "$ACKS/$name.jsonl" 2>/dev/null; then
         rm -f "$source" "$INBOX/$name.integrity"
         return 0
     fi
     claimed="$CLAIMED/$name.b64"
     manifest="$CLAIMED/$name.integrity"
+    capsule="$CLAIMED/$name.capsule"
     mv "$source" "$claimed" 2>/dev/null || return 0
     if ! mv "$INBOX/$name.integrity" "$manifest" 2>/dev/null; then
         write_ack "$name" voice_failed integrity-manifest
         mv -f "$claimed" "$STALE/$name.b64.no-manifest"
         return 0
+    fi
+    if [ -f "$INBOX/$name.capsule" ]; then
+        mv "$INBOX/$name.capsule" "$capsule" 2>/dev/null || {
+            write_ack "$name" voice_failed capsule-claim
+            rm -f "$claimed" "$manifest"
+            return 0
+        }
+    else
+        capsule=""
     fi
     expected_version=$(manifest_field "$manifest" version)
     expected_size=$(manifest_field "$manifest" size)
@@ -318,7 +530,7 @@ process_one() {
     fi
     log "playing $name"
     play_clip "$decoded" "$name" "$duck" "$duck_percent" "$fade_down" "$fade_up" || true
-    rm -f "$claimed" "$manifest" "$decoded"
+    rm -f "$claimed" "$manifest" "$decoded" ${capsule:+"$capsule"}
 }
 
 process_music_one() {
@@ -444,7 +656,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 
-while true; do
+drain_ready_items() {
+    expire_due_capsules
+    process_fader_requests
     for candidate in "$INBOX"/*.b64; do
         [ -e "$candidate" ] || continue
         process_one "$candidate"
@@ -453,6 +667,20 @@ while true; do
         [ -e "$candidate" ] || continue
         process_music_one "$candidate"
     done
+}
+
+drain_ready_items
+last_rescan=$(date +%s)
+while true; do
     write_health running
-    sleep "$POLL_SECONDS"
+    if IFS= read -r -t "$HEARTBEAT_SECONDS" _event <&9; then
+        drain_ready_items
+        last_rescan=$(date +%s)
+        continue
+    fi
+    now=$(date +%s)
+    if [ $((now - last_rescan)) -ge "$SAFETY_RESCAN_SECONDS" ] 2>/dev/null; then
+        drain_ready_items
+        last_rescan=$now
+    fi
 done

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
 from audience_of_one import rundown
-from audience_of_one.scheduler import StationScheduler
+from audience_of_one.scheduler import StateChangeWaiter, StationScheduler
 from audience_of_one.transactions import Journal
 
 
@@ -67,6 +69,22 @@ def playing(uri: str, *, progress=0, duration=100_000):
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_idle_wait_wakes_when_the_rundown_changes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            queue = Path(raw) / "queue"
+            waiter = StateChangeWaiter(queue)
+            if waiter.kqueue is None:
+                self.skipTest("kqueue is only available on macOS")
+            result: list[bool] = []
+            thread = threading.Thread(target=lambda: result.append(waiter.wait(2.0)))
+            thread.start()
+            time.sleep(0.05)
+            (queue / "programme.json").write_text("{}", encoding="utf-8")
+            thread.join(1.0)
+            waiter.close()
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result, [True])
+
     def scheduler(self, state, music, events, *, duration=5.0):
         return StationScheduler(
             {"scheduler": {

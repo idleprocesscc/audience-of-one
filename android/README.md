@@ -135,7 +135,7 @@ Open Termux and Termux:Boot once after installation. Opening Boot is what
 authorizes it to receive the next device boot. Termux:API may have no launcher;
 Android asks for its relevant permission when a `termux-*` command first needs it.
 
-## 3. Give Android permission to keep the radio alive
+## 3. Let Android receive the radio without keeping it awake all day
 
 Android and OEM wording varies. Judge the resulting state, not the menu label.
 
@@ -161,8 +161,16 @@ pkg update
 pkg install python mpv pulseaudio curl coreutils termux-api git
 ```
 
-Accept Android's shared-storage prompt. The station uses shared storage only for
-its own authenticated inbox, acknowledgements and health file.
+Accept Android's shared-storage prompt. Ordinary voice, music, acknowledgements
+and health now live in Termux-private storage. Shared storage is touched only
+when the Android recorder hands over an explicit call-in clip; this keeps
+MediaProvider out of the idle path.
+
+The receiver does not hold a permanent wakelock. A complete delivery opens a
+named, expiring work lease, wakes the event-driven player, and releases the
+lease after its real receipt. Therefore unrestricted background access still
+matters for a reliable cold request, but an idle station should no longer keep
+the phone's CPU or Media picker active through the night.
 
 ## 4. Install the phone receiver
 
@@ -328,7 +336,7 @@ is not a successful fader.
 
 Capability note: the helper's exported `djfocus://` activity lets another
 Android app on the same phone request a temporary audio-focus duck. It reads no
-files and caps a lease at 120 seconds. Since 0.2.0 the same APK also exports a
+files and caps a lease at 120 seconds. Since 0.3.2 the same APK also provides a
 `djrecord://` activity backing the optional voice call-in: it can record up to
 60 seconds of microphone audio into the station folder under shared Downloads,
 but only after the microphone permission is granted by hand (the details and
@@ -365,7 +373,7 @@ A physical call-in — long-press Volume Up and the agent answers on air —
 is described in [docs/CALL-IN.md](../docs/CALL-IN.md). It is deliberately
 outside the first installation so the core path stays short. The ring-only
 tier works with the shipped receiver and no app build; the voice tier now
-ships too — the focus helper 0.2.0 APK carries a microphone foreground
+ships too — the focus helper 0.3.2 APK carries a microphone foreground
 service, the Termux scripts stage each clip, and `station call-in watch`
 turns it into a transcript on the Mac. Voice needs the APK build, one
 microphone grant, and an STT endpoint you choose; when any of that is

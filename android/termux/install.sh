@@ -8,7 +8,8 @@ LIB="$HOME/.local/lib/audience-of-one"
 BIN="$PREFIX/bin"
 CONFIG_DIR="$HOME/.config/audience-of-one"
 STATE="$HOME/.local/state/audience-of-one-phone"
-ROOT="$HOME/storage/shared/Download/AudienceOfOne"
+ROOT="$HOME/.local/share/audience-of-one-phone/transport"
+MEDIA_ROOT="$HOME/storage/shared/Download/AudienceOfOne"
 TOKEN_FILE="$CONFIG_DIR/phone-token"
 CONFIG_FILE="$CONFIG_DIR/phone.env"
 BOOT_DIR="$HOME/.termux/boot"
@@ -29,14 +30,14 @@ if [ ! -d "$HOME/storage/shared" ]; then
     exit 2
 fi
 
-mkdir -p "$LIB" "$CONFIG_DIR" "$STATE" "$ROOT" "$BOOT_DIR"
+command -v station-phone >/dev/null 2>&1 && station-phone stop >/dev/null 2>&1 || true
+mkdir -p "$LIB" "$CONFIG_DIR" "$STATE" "$ROOT" "$MEDIA_ROOT" "$BOOT_DIR"
 install -m 700 "$SOURCE/station-phone" "$BIN/station-phone"
 ln -sf "$BIN/station-phone" "$BIN/fm"
 install -m 700 "$SOURCE/station-phone-player.sh" "$LIB/station-phone-player.sh"
 install -m 700 "$SOURCE/station_phone_mcp.py" "$LIB/station_phone_mcp.py"
 install -m 700 "$SOURCE/station_phone_mpv.py" "$LIB/station_phone_mpv.py"
 install -m 700 "$SOURCE/station_focus_receipt.py" "$LIB/station_focus_receipt.py"
-install -m 700 "$SOURCE/station-call-in-watch.sh" "$LIB/station-call-in-watch.sh"
 install -m 700 "$SOURCE/station-call-in-record.sh" "$LIB/station-call-in-record.sh"
 
 if [ ! -s "$TOKEN_FILE" ]; then
@@ -50,14 +51,38 @@ if [ ! -s "$CONFIG_FILE" ]; then
         printf 'STATION_PHONE_PORT=8787\n'
         printf 'STATION_PHONE_LOCATION_ID=station\n'
         printf 'STATION_PHONE_TOKEN_FILE=%q\n' "$TOKEN_FILE"
+        printf 'STATION_CALLIN_MEDIA_ROOT=%q\n' "$MEDIA_ROOT"
+        printf 'STATION_PHONE_EVENT_SOCKET=%q\n' "$STATE/events.sock"
+        printf 'STATION_PHONE_EVENT_FIFO=%q\n' "$STATE/player.events"
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
-elif grep -Fq "$HOME/storage/shared/AudienceOfOne" "$CONFIG_FILE"; then
-    sed -i "s#$HOME/storage/shared/AudienceOfOne#$ROOT#g" "$CONFIG_FILE"
+else
+    if grep -q '^STATION_PHONE_ROOT=' "$CONFIG_FILE"; then
+        sed -i "s#^STATION_PHONE_ROOT=.*#STATION_PHONE_ROOT=$(printf %q "$ROOT")#" "$CONFIG_FILE"
+    else
+        printf 'STATION_PHONE_ROOT=%q\n' "$ROOT" >> "$CONFIG_FILE"
+    fi
+    grep -q '^STATION_CALLIN_MEDIA_ROOT=' "$CONFIG_FILE" || \
+        printf 'STATION_CALLIN_MEDIA_ROOT=%q\n' "$MEDIA_ROOT" >> "$CONFIG_FILE"
+    grep -q '^STATION_PHONE_EVENT_SOCKET=' "$CONFIG_FILE" || \
+        printf 'STATION_PHONE_EVENT_SOCKET=%q\n' "$STATE/events.sock" >> "$CONFIG_FILE"
+    grep -q '^STATION_PHONE_EVENT_FIFO=' "$CONFIG_FILE" || \
+        printf 'STATION_PHONE_EVENT_FIFO=%q\n' "$STATE/player.events" >> "$CONFIG_FILE"
 fi
+
+# Move only this receiver's transport artifacts off MediaStore. The Android
+# recorder still owns call-in-work in shared storage and hands it over by event.
+for old_root in "$HOME/storage/shared/AudienceOfOne" "$MEDIA_ROOT"; do
+    [ "$old_root" = "$ROOT" ] && continue
+    for directory in station-inbox station-music-inbox station-acks call-in-outbox; do
+        [ -d "$old_root/$directory" ] || continue
+        mkdir -p "$ROOT/$directory"
+        find "$old_root/$directory" -maxdepth 1 -type f -exec mv -f {} "$ROOT/$directory/" \; \
+            2>/dev/null || true
+    done
+done
 {
     printf '#!/data/data/com.termux/files/usr/bin/bash\n'
-    printf 'termux-wake-lock >/dev/null 2>&1 || true\n'
     printf 'station-phone start >> "$HOME/.local/state/audience-of-one-phone/boot.log" 2>&1\n'
 } > "$BOOT_FILE"
 chmod 700 "$BOOT_FILE"
