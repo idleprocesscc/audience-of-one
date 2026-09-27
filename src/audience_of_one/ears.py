@@ -276,6 +276,22 @@ def _store(path: Path, record: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _fingerprint(source: str, uri: str) -> dict[str, int] | None:
+    """A local file can be replaced at the same path; a remaster is a different record."""
+    if not uri.startswith("local:"):
+        return None
+    stat = Path(source).stat()
+    return {"bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _usable(cached: dict | None, fingerprint: dict | None) -> bool:
+    if not cached:
+        return False
+    if cached.get("key") is None and cached.get("key_unavailable") and _numpy() is not None:
+        return False
+    return fingerprint is None or cached.get("fingerprint") == fingerprint
+
+
 def listen(state_path: Path, value: str, client: Any, *, refresh: bool = False,
            analyzer: Callable[[str], dict[str, Any]] = analyze) -> dict[str, Any]:
     """Measure one record from the configured shelf, reusing an earlier measurement."""
@@ -286,17 +302,20 @@ def listen(state_path: Path, value: str, client: Any, *, refresh: bool = False,
             "Spotify audio cannot be decoded"
         )
     raw = value.strip()
-    if not refresh and raw.startswith(("local:", "qqmusic:")):
+    # An exact QQ Music id can be answered without asking the service for a new stream.
+    if not refresh and raw.startswith("qqmusic:"):
         cached = _load_cached(_cache_path(state_path, raw))
-        if cached:
+        if _usable(cached, None):
             return {**cached, "cached": True}
     uri, evidence = client.resolve(raw)
+    source = source_of(uri)
+    fingerprint = _fingerprint(source, uri)
     path = _cache_path(state_path, uri)
     if not refresh:
         cached = _load_cached(path)
-        if cached:
+        if _usable(cached, fingerprint):
             return {**cached, "cached": True}
-    analysis = analyzer(source_of(uri))
+    analysis = analyzer(source)
     artists = evidence.get("artists") or []
     name = evidence.get("name") or evidence.get("relative_path") or uri
     record = {
@@ -306,6 +325,8 @@ def listen(state_path: Path, value: str, client: Any, *, refresh: bool = False,
         "analyzed_at": time.time(),
         **analysis,
     }
+    if fingerprint is not None:
+        record["fingerprint"] = fingerprint
     _store(path, record)
     return {**record, "cached": False}
 
