@@ -92,6 +92,44 @@ class PhoneVoicePlayerTests(unittest.TestCase):
         self.assertTrue(receipt["duck_confirmed"])
         self.assertTrue(receipt["ack_order_valid"])
 
+    def test_a_receiver_without_lease_tools_is_never_asked_for_a_lease(self):
+        finish = ack(("voice_started", 2), ("voice_finished", 4))
+        leases = []
+
+        class GeneralAndroidMCP(FakeTransport):
+            def offers(self, tool):
+                return False
+
+            def lease(self, lease_id, action, ttl_seconds=0):
+                leases.append((lease_id, action))
+                raise PhoneError("phone MCP station_power_lease failed")
+
+        class StationReceiver(GeneralAndroidMCP):
+            def offers(self, tool):
+                return tool == "station_power_lease"
+
+            def lease(self, lease_id, action, ttl_seconds=0):
+                leases.append((lease_id, action))
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as raw:
+            audio = Path(raw) / "line.mp3"
+            audio.write_bytes(b"an audio payload")
+            for transport_class, expected in (
+                (GeneralAndroidMCP, []),
+                (StationReceiver, [("delivery:line-1", "acquire"),
+                                   ("delivery:line-1", "release")]),
+            ):
+                leases.clear()
+                clock = FakeClock()
+                player = PhoneVoicePlayer(
+                    transport_class(["", finish, finish]),
+                    monotonic=clock.monotonic, sleep=clock.sleep, chunk_size=1024,
+                )
+                receipt = player.play(audio, 2.0, remote_id="line-1", duck=False)
+                self.assertTrue(receipt["voice_confirmed"])
+                self.assertEqual(leases, expected)
+
     def test_voice_failure_is_never_reported_as_played(self):
         transport = FakeTransport(["", ack(("voice_failed", 1))])
         clock = FakeClock()
@@ -325,6 +363,37 @@ class MCPPhoneTransportTests(unittest.TestCase):
         self.assertIsNone(requests[0][0].get_header("Mcp-session-id"))
         self.assertEqual(requests[1][0].get_header("Mcp-session-id"), "session-1")
         self.assertNotIn("secret-test-token", output)
+
+    def test_receiver_tools_are_listed_once_per_transport(self):
+        class Response:
+            def __init__(self, body, headers=None):
+                self.body = body.encode()
+                self.headers = headers or {}
+
+            def read(self):
+                return self.body
+
+        listing = json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": [
+            {"name": "android_write_file"}, {"name": "android_read_file"},
+        ]}})
+        responses = [
+            Response(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                     {"mcp-session-id": "session-1"}),
+            Response("null"),
+            Response(listing),
+        ]
+        methods = []
+
+        def opener(request, timeout):
+            methods.append(json.loads(request.data)["method"])
+            return responses.pop(0)
+
+        transport = MCPPhoneTransport(
+            "https://phone.invalid/mcp", "token", "public-location", opener=opener,
+        )
+        self.assertFalse(transport.offers("station_power_lease"))
+        self.assertTrue(transport.offers("android_write_file"))
+        self.assertEqual(methods, ["initialize", "notifications/initialized", "tools/list"])
 
     def test_optional_storage_prefix_stays_below_the_authorized_location(self):
         transport = MCPPhoneTransport(

@@ -83,6 +83,7 @@ class MCPPhoneTransport:
         self.session_id: str | None = None
         self.request_id = 0
         self.lock = threading.Lock()
+        self._tools: set[str] | None = None
 
     def _post(self, payload: dict[str, Any], *, session: bool = True) -> dict[str, Any]:
         headers = {
@@ -241,6 +242,27 @@ class MCPPhoneTransport:
         })
         return raw.splitlines()
 
+    def offers(self, tool: str) -> bool:
+        """Whether this receiver's MCP server lists a tool; asked once per transport."""
+        if self._tools is None:
+            with self.lock:
+                self._ensure_session()
+                self.request_id += 1
+                payload = {"jsonrpc": "2.0", "id": self.request_id + 1,
+                           "method": "tools/list", "params": {}}
+                response = self._post(payload)
+                if self._session_rejected(response):
+                    self.session_id = None
+                    self._ensure_session()
+                    response = self._post(payload)
+            tools = (response.get("result") or {}).get("tools")
+            if response.get("error") or not isinstance(tools, list):
+                raise PhoneError("phone MCP did not list its tools")
+            self._tools = {
+                str(entry.get("name")) for entry in tools if isinstance(entry, dict)
+            }
+        return tool in self._tools
+
     def lease(self, lease_id: str, action: str, ttl_seconds: float = 0) -> dict[str, Any]:
         raw = self.call("station_power_lease", {
             "location_id": self.location_id,
@@ -309,10 +331,18 @@ def _events(raw: str) -> dict[str, dict[str, Any]]:
 
 
 def _power_lease(transport: Any, lease_id: str, action: str, ttl: float = 0) -> None:
-    """Use the current receiver lease protocol without breaking test/legacy transports."""
+    """Use the current receiver lease protocol without breaking test/legacy transports.
+
+    A receiver reached through a general-purpose Android MCP server (files in shared
+    storage, its own player keeping itself awake) has no lease tool; skip it there.
+    """
     lease = getattr(transport, "lease", None)
-    if callable(lease):
-        lease(lease_id, action, ttl)
+    if not callable(lease):
+        return
+    offers = getattr(transport, "offers", None)
+    if callable(offers) and not offers("station_power_lease"):
+        return
+    lease(lease_id, action, ttl)
 
 
 class PhoneVoicePlayer:
