@@ -81,11 +81,33 @@ def _next_order(state_path: Path) -> int:
     return int(max(finite) if finite else 0) + 1000
 
 
+def _resolve_follows(state_path: Path, value: str) -> str:
+    """Name the item a seam was written for: an id, or the item right before it."""
+    value = str(value).strip()
+    if value == "previous":
+        queued = items(state_path)
+        if queued:
+            return queued[-1]["id"]
+        played = sorted((state_path / "played").glob("*.json"))
+        if played:
+            return played[-1].stem
+        raise RundownError("there is no earlier programme item to follow")
+    identifier = value.removesuffix(".json")
+    if not identifier.isdigit():
+        raise RundownError(f"invalid item id to follow: {value}")
+    filename = f"{identifier}.json"
+    if not (_queue_dir(state_path) / filename).exists() \
+            and not (state_path / "played" / filename).exists():
+        raise RundownError(f"item to follow not found: {identifier}")
+    return identifier
+
+
 def append(state_path: Path, *, track: str | None = None, say: str | None = None,
            lang: str | None = None, transition: str = "overlap",
            after: str = "autoplay", phone: bool = False,
            device: str | None = None, duck: bool = False,
-           clip: str | None = None, clip_voice_at: float | None = None) -> dict:
+           clip: str | None = None, clip_voice_at: float | None = None,
+           follows: str | None = None) -> dict:
     if not track and not say and not clip:
         raise RundownError("a programme item needs a track, a voice line, or a clip")
     if clip_voice_at is not None:
@@ -101,6 +123,8 @@ def append(state_path: Path, *, track: str | None = None, say: str | None = None
         raise RundownError(f"unknown after mode: {after}")
     if after != "autoplay" and not track:
         raise RundownError("repeat/stop after modes require a track")
+    if follows is not None:
+        follows = _resolve_follows(state_path, follows)
 
     queue_dir = _queue_dir(state_path)
     queue_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -128,6 +152,8 @@ def append(state_path: Path, *, track: str | None = None, say: str | None = None
         data["clip"] = clip
     if clip_voice_at is not None:
         data["clip_voice_at"] = float(clip_voice_at)
+    if follows:
+        data["follows"] = follows
     if lang:
         data["lang"] = lang
     if after != "autoplay":
