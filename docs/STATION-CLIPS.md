@@ -30,11 +30,12 @@ absolute paths, `..`, symlinks that leave the shelf, and unsupported types are
 rejected. WAV, AIFF, CAF, FLAC, M4A, and MP3 are accepted. `station doctor`
 reports the shelf and requires `ffmpeg` (4.4 or newer) once `[clips]` exists.
 
-Master each clip to sit where it will be heard. Nothing is normalized: a clip is
-mixed at its own level against the station voice as synthesized, and a limiter
-only keeps an unlucky sum below full scale. A piano phrase around −20 LUFS under
-a voice near −16 LUFS is a reasonable first balance; measure the result rather
-than trusting a meter reading of either part alone.
+Master each clip against the station voice as the TTS provider actually
+delivers it. Nothing is normalized: the clip is mixed at its own level, and a
+limiter only keeps an unlucky sum below full scale. Measure one synthesized line
+first — provider output is often hotter than −16 LUFS — then keep a piano phrase
+roughly 4 LU below it; against a voice near −13 LUFS, that is an echo near
+−17 LUFS. Measure the rendered file in `prepared/` rather than either part alone.
 
 ## Programme shapes
 
