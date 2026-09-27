@@ -29,6 +29,16 @@ from .transactions import Journal, TransactionError
 from .tts import TTSError
 
 
+def _add_clip_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--clip", help="a prepared recording below clips.root, played on the voice channel",
+    )
+    parser.add_argument(
+        "--clip-voice-at", type=float, dest="clip_voice_at", metavar="SECONDS",
+        help="start the voice line this many seconds into the clip (default: after it)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="station",
@@ -90,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("--after", choices=sorted(rundown.AFTER_MODES), default="autoplay")
     queue.add_argument("--phone", action="store_true")
     queue.add_argument("--device")
+    _add_clip_arguments(queue)
     queue.add_argument("--json", action="store_true", dest="as_json")
 
     rundown_parser = sub.add_parser("rundown", help="show the mutable programme rundown")
@@ -113,16 +124,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--phone", action="store_true",
         help="send speech to the configured Android receiver",
     )
+    _add_clip_arguments(open_parser)
     open_parser.add_argument("--json", action="store_true", dest="as_json")
 
     say_parser = sub.add_parser(
         "say", help="speak one receipted line now, without starting or changing music"
     )
-    say_parser.add_argument("text", help="the line to synthesize and play")
+    say_parser.add_argument(
+        "text", nargs="?", help="the line to synthesize and play (optional with --clip)",
+    )
     say_parser.add_argument(
         "--phone", action="store_true",
         help="speak through the configured Android receiver instead of this Mac",
     )
+    _add_clip_arguments(say_parser)
     say_parser.add_argument("--json", action="store_true", dest="as_json")
 
     retry_parser = sub.add_parser(
@@ -302,6 +317,8 @@ def doctor_payload(path: Path, state_path: Path, *, phone: bool = False) -> dict
             for name in selected
         ):
             executables.update({"say", "ffmpeg"})
+        if data.get("clips"):
+            executables.add("ffmpeg")
     for executable in sorted(executables):
         found = shutil.which(executable)
         checks.append({
@@ -315,6 +332,14 @@ def doctor_payload(path: Path, state_path: Path, *, phone: bool = False) -> dict
             "component": "local_library",
             "status": "pass" if library.is_dir() else "action_required",
             "detail": str(library) if library.is_dir() else f"create local library {library}",
+        })
+    clips_config = (data or {}).get("clips") or {}
+    if clips_config:
+        clip_root = Path(str(clips_config.get("root") or "")).expanduser()
+        checks.append({
+            "component": "clips",
+            "status": "pass" if clip_root.is_dir() else "action_required",
+            "detail": str(clip_root) if clip_root.is_dir() else f"create clip shelf {clip_root}",
         })
     qqmusic_config = (data or {}).get("qqmusic") or {}
     if qqmusic_config.get("enabled"):
@@ -553,6 +578,8 @@ def command_queue(args: argparse.Namespace) -> int:
             phone=bool(getattr(args, "phone", False)),
             device=args.device,
             duck=bool(getattr(args, "duck", False)),
+            clip=getattr(args, "clip", None),
+            clip_voice_at=getattr(args, "clip_voice_at", None),
         )
     except (rundown.RundownError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
@@ -581,6 +608,8 @@ def command_rundown(args: argparse.Namespace) -> int:
     for index, entry in enumerate(payload["up_next"], 1):
         programme = entry["programme"] or {}
         parts = []
+        if programme.get("clip"):
+            parts.append(f"clip: {programme['clip']}")
         if programme.get("say"):
             parts.append(f"voice: {programme['say']}")
         if programme.get("track"):
@@ -635,6 +664,8 @@ def command_open(args: argparse.Namespace) -> int:
             phone=bool(getattr(args, "phone", False)),
             device=args.device,
             duck=bool(getattr(args, "duck", False)),
+            clip=getattr(args, "clip", None),
+            clip_voice_at=getattr(args, "clip_voice_at", None),
         )
         transaction = DesktopEngine(data, state_path).execute(item)
         payload = {
@@ -756,7 +787,8 @@ def command_history(args: argparse.Namespace) -> int:
         print(f"PLAYED — {len(entries)} item(s)")
         for entry in entries:
             programme = entry["programme"]
-            label = programme.get("track") or programme.get("say") or "unknown"
+            label = programme.get("track") or programme.get("say") \
+                or programme.get("clip") or "unknown"
             print(f"{entry['id']} {label}")
     return 0
 

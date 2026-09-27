@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import rundown, tts, wildcards
+from . import clips, rundown, tts, wildcards
 from .adapters import music_client
 from .adapters.phone import (
     PhoneError,
@@ -26,6 +26,11 @@ from .transactions import Journal, TransactionError
 
 class PlayoutError(RuntimeError):
     pass
+
+
+def _voiced(programme: dict) -> bool:
+    """A spoken line, a recorded clip, or both occupy the one voice channel."""
+    return bool(programme.get("say") or programme.get("clip"))
 
 
 class MacSpotifyFader:
@@ -174,6 +179,7 @@ class DesktopEngine:
         spotify: Any | None = None,
         synthesize: Callable[[dict[str, Any], str, Path], str] = tts.synthesize,
         verify_audio: Callable[[Path], float] = tts.verify_audio,
+        render_clip: Callable[[Path, Path | None, float, Path], None] = clips.render,
         voice_player: Any | None = None,
         phone_player: Any | None = None,
         phone_music: Any | None = None,
@@ -186,6 +192,7 @@ class DesktopEngine:
         self.music = spotify or music_client(config, state_path)
         self.synthesize = synthesize
         self.verify_audio = verify_audio
+        self.render_clip = render_clip
         self.voice_player = voice_player
         self.phone_player = phone_player
         self.phone_music = phone_music
@@ -251,7 +258,7 @@ class DesktopEngine:
                 }
             else:
                 device = self.music.ready_device(device_spec)
-            if programme.get("say"):
+            if _voiced(programme):
                 if not phone_local_music and (not device_spec or (
                     device_spec != device.get("id")
                     and str(device_spec).casefold()
@@ -317,18 +324,37 @@ class DesktopEngine:
                 "resolved": resolved,
                 "device": device,
             })
-        if programme.get("say"):
-            audio = self.state_path / "prepared" / f"{Path(filename).stem}.mp3"
-            provider = self.synthesize(self.config, programme["say"], audio)
+        if _voiced(programme):
+            stem = Path(filename).stem
+            audio = self.state_path / "prepared" / f"{stem}.mp3"
+            receipt: dict[str, Any] = {"prepared": True}
+            # Resolve the clip before paying for speech: a missing file fails first.
+            clip = clips.resolve(self.config, programme["clip"]) \
+                if programme.get("clip") else None
+            spoken = None
+            if programme.get("say"):
+                spoken = audio.with_name(f"{stem}.voice.mp3") if clip else audio
+                receipt["provider"] = self.synthesize(self.config, programme["say"], spoken)
+            if clip is not None:
+                clip_duration = self.verify_audio(clip)
+                clip_receipt: dict[str, Any] = {
+                    "requested": programme["clip"],
+                    "path": str(clip),
+                    "duration_seconds": clip_duration,
+                }
+                voice_at = 0.0
+                if spoken is not None:
+                    offset = programme.get("clip_voice_at")
+                    voice_at = clip_duration if offset is None else float(offset)
+                    clip_receipt["voice_at_seconds"] = voice_at
+                    clip_receipt["voice_duration_seconds"] = self.verify_audio(spoken)
+                self.render_clip(clip, spoken, voice_at, audio)
+                receipt["clip"] = clip_receipt
             duration = self.verify_audio(audio)
             prepared["audio"] = audio
             prepared["duration"] = duration
-            self.journal.receipt(filename, "voice", {
-                "prepared": True,
-                "provider": provider,
-                "audio": str(audio),
-                "duration_seconds": duration,
-            })
+            receipt.update({"audio": str(audio), "duration_seconds": duration})
+            self.journal.receipt(filename, "voice", receipt)
         return prepared
 
     def _start_track(self, filename: str, prepared: dict) -> dict:
@@ -660,7 +686,8 @@ class DesktopEngine:
         transaction = self.journal.begin(filename)
         if (transaction.get("recovery") or {}).get("resume_track_only") \
                 and programme.get("track"):
-            programme.pop("say", None)
+            for key in ("say", "clip", "clip_voice_at"):
+                programme.pop(key, None)
             self.journal.receipt(filename, "recovery", {
                 "resume_track_only": True,
                 "applied": True,
@@ -670,8 +697,8 @@ class DesktopEngine:
             self.journal.set_state(filename, "ready")
             return programme, prepared
         except (
-            SpotifyError, PhoneError, tts.TTSError, PlayoutError, TransactionError,
-            OSError, subprocess.SubprocessError,
+            SpotifyError, PhoneError, tts.TTSError, clips.ClipError, PlayoutError,
+            TransactionError, OSError, subprocess.SubprocessError,
         ) as error:
             self.journal.set_state(filename, "failed", str(error))
             raise PlayoutError(str(error)) from error
@@ -679,14 +706,15 @@ class DesktopEngine:
     def _fire_claimed(self, item: dict, programme: dict, prepared: dict) -> dict:
         filename = item["filename"]
         transition = rundown.normalize_transition(programme.get("transition", "overlap"))
+        voiced = _voiced(programme)
         voice_played = False
         track_started = False
         try:
             self.journal.set_state(filename, "firing")
-            if programme.get("say") and transition == "tail":
+            if voiced and transition == "tail":
                 self._play_voice(filename, prepared, duck=True)
                 voice_played = True
-            elif programme.get("say") and transition in {"clean", "blackout"}:
+            elif voiced and transition in {"clean", "blackout"}:
                 self._play_voice(
                     filename, prepared, duck=bool(programme.get("duck")),
                 )
@@ -700,7 +728,7 @@ class DesktopEngine:
             if programme.get("track"):
                 self._start_track(filename, prepared)
                 track_started = True
-            if programme.get("say") and transition not in {"clean", "blackout", "tail"}:
+            if voiced and transition not in {"clean", "blackout", "tail"}:
                 if transition == "intro":
                     self.sleep(float(self.desktop.get("intro_delay_seconds", 0.25)))
                 self._play_voice(

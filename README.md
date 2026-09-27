@@ -58,6 +58,9 @@ in receipted transactions. Later directions live in [ROADMAP.md](ROADMAP.md).
   account-authorized stream, Termux mpv proves position motion, and the URL is
   removed from the transport inbox before playout; real-device music, duck,
   restore, and pause receipts have passed;
+- shipped: station clips — host-prepared idents and short musical echoes ride
+  the voice channel, rendered alone or under the line at a chosen second, with
+  the same transitions, ducking, phone delivery, and receipts as speech;
 - optional shipped toy: a physical-key call-in can remain a ring-only signal or
   use the Android foreground recorder, authenticated phone transport, and a
   listener-chosen STT endpoint to hand one short voice clip to the agent;
@@ -83,6 +86,9 @@ For Spotify Premium music and speech on the same Android phone, hand the
 [Android guide](android/README.md) to an AI agent. It covers both 5G
 routes and the standalone `station say "..." --phone` intercom. The optional
 [physical call-in](docs/CALL-IN.md) stays outside the main installation path.
+
+For an ident at the top of a show, or a few bars answering the record that just
+ended before the host speaks, see [station clips](docs/STATION-CLIPS.md).
 
 For the no-subscription local route, use the
 [local record-box preview](docs/LOCAL-RECORD-BOX.md). It shares the programme and
