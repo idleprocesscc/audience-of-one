@@ -673,6 +673,27 @@ class DesktopEngine:
             programme, prepared = self._prepare_claimed(item, allow_tail=False)
             return self._fire_claimed(item, programme, prepared)
 
+    def _apply_follows(self, filename: str, programme: dict) -> None:
+        """A seam written for one record keeps its clip and line only after that record."""
+        follows = programme.get("follows")
+        if not follows:
+            return
+        state = (self.journal.load(f"{follows}.json") or {}).get("state") or "missing"
+        if state == "played":
+            return
+        dropped = [key for key in ("clip", "say") if programme.get(key)]
+        for key in ("clip", "clip_voice_at", "say"):
+            programme.pop(key, None)
+        self.journal.receipt(filename, "recovery", {
+            "follows": follows,
+            "follows_state": state,
+            "dropped": dropped,
+        })
+        if not programme.get("track"):
+            raise PlayoutError(
+                f"item {follows} did not play ({state}); this seam was written for it"
+            )
+
     def _prepare_claimed(
         self, item: dict, *, allow_tail: bool,
     ) -> tuple[dict, dict]:
@@ -693,6 +714,7 @@ class DesktopEngine:
                 "applied": True,
             })
         try:
+            self._apply_follows(filename, programme)
             prepared = self._prepare(filename, programme)
             self.journal.set_state(filename, "ready")
             return programme, prepared

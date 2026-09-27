@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -274,6 +275,64 @@ class ClipProgrammeTests(unittest.TestCase):
             self.assertFalse(any(event.startswith(("tts:", "voice:")) for event in events))
             self.assertIn("play", events)
 
+    def test_echo_keeps_its_clip_and_line_after_the_record_it_follows(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            self.shelf(state)
+            events: list[str] = []
+            renders: list = []
+            record = rundown.append(state, track="City of Stars", device="Desktop")
+            Journal(state).set_state(record["filename"], "played")
+            rundown.archive_played(state, record["filename"])
+            echo = rundown.append(
+                state, track="Next", say="Over the last chord.", clip="echo.wav",
+                transition="clean", device="Desktop", follows="previous",
+            )
+            self.assertEqual(echo["data"]["follows"], record["id"])
+            result = self.engine(state, events, renders).execute(echo)
+            self.assertEqual(result["state"], "played")
+            self.assertEqual(len(renders), 1)
+            self.assertEqual(result["recovery"], {})
+
+    def test_echo_behind_a_failed_record_drops_its_seam_and_keeps_the_next_record(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            self.shelf(state)
+            events: list[str] = []
+            renders: list = []
+            record = rundown.append(state, track="Unavailable version", device="Desktop")
+            Journal(state).set_state(record["filename"], "failed", "account cannot stream")
+            echo = rundown.append(
+                state, track="Next", say="City of Stars. He asked the stars...",
+                clip="echo.wav", clip_voice_at=5.74, transition="clean",
+                device="Desktop", follows="previous",
+            )
+            result = self.engine(state, events, renders).execute(echo)
+            self.assertEqual(result["state"], "played")
+            self.assertEqual(renders, [])
+            self.assertFalse(any(event.startswith(("tts:", "voice:")) for event in events))
+            self.assertIn("play", events)
+            self.assertEqual(result["recovery"], {
+                "follows": record["id"], "follows_state": "failed",
+                "dropped": ["clip", "say"],
+            })
+            # The archived programme still says what was planned for this seam.
+            archived = json.loads((state / "played" / echo["filename"]).read_text())
+            self.assertEqual(archived["clip"], "echo.wav")
+
+    def test_seam_without_a_record_fails_when_its_record_did_not_play(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            self.shelf(state)
+            events: list[str] = []
+            record = rundown.append(state, track="Unavailable version", device="Desktop")
+            Journal(state).set_state(record["filename"], "failed", "account cannot stream")
+            echo = rundown.append(state, clip="echo.wav", follows=record["id"])
+            with self.assertRaisesRegex(PlayoutError, f"item {record['id']} did not play"):
+                self.engine(state, events, [], spotify=ForbiddenSpotify()).execute(echo)
+            self.assertFalse(any(event.startswith(("tts:", "render:", "voice:")) for event in events))
+            self.assertEqual(Journal(state).load(echo["filename"])["state"], "failed")
+
 
 class ClipRundownAndCLITests(unittest.TestCase):
     def test_rundown_accepts_a_clip_alone_and_bounds_the_voice_offset(self):
@@ -291,6 +350,32 @@ class ClipRundownAndCLITests(unittest.TestCase):
             for bad in (-0.1, 600.5, True):
                 with self.assertRaisesRegex(rundown.RundownError, "0 to 600"):
                     rundown.append(state, say="Line", clip="echo.wav", clip_voice_at=bad)
+
+    def test_follows_names_an_existing_item_or_the_one_right_before(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            with self.assertRaisesRegex(rundown.RundownError, "no earlier programme item"):
+                rundown.append(state, say="Line", follows="previous")
+            first = rundown.append(state, track="Song")
+            Journal(state).set_state(first["filename"], "played")
+            rundown.archive_played(state, first["filename"])
+            self.assertEqual(
+                rundown.append(state, say="After it.", follows="previous")["data"]["follows"],
+                first["id"],
+            )
+            second = rundown.append(state, track="Another")
+            self.assertEqual(
+                rundown.append(state, say="Then.", follows="previous")["data"]["follows"],
+                second["id"],
+            )
+            self.assertEqual(
+                rundown.append(state, say="By id.", follows=first["id"])["data"]["follows"],
+                first["id"],
+            )
+            with self.assertRaisesRegex(rundown.RundownError, "invalid item id"):
+                rundown.append(state, say="Line", follows="../etc")
+            with self.assertRaisesRegex(rundown.RundownError, "not found"):
+                rundown.append(state, say="Line", follows="000000000000001")
 
     def test_clips_table_needs_a_root(self):
         data = tomllib.loads(station_config.DEFAULT_CONFIG)
@@ -312,9 +397,10 @@ class ClipRundownAndCLITests(unittest.TestCase):
     def test_queue_and_parser_carry_the_clip_fields(self):
         parsed = cli.build_parser().parse_args([
             "queue", "Next Song", "A line.", "--clip", "echo.wav",
-            "--clip-voice-at", "5.74", "--transition", "clean",
+            "--clip-voice-at", "5.74", "--transition", "clean", "--follows", "previous",
         ])
         self.assertEqual((parsed.clip, parsed.clip_voice_at), ("echo.wav", 5.74))
+        self.assertEqual(parsed.follows, "previous")
         with tempfile.TemporaryDirectory() as raw:
             state = Path(raw)
             with contextlib.redirect_stdout(io.StringIO()):

@@ -151,11 +151,14 @@ rides the voice channel, alone or with the line entering over it:
 
 ```sh
 station queue "Next Song" "A line over the last chord." \
-  --clip echoes/after-this-song.wav --clip-voice-at 5.7 --transition clean
+  --clip echoes/after-this-song.wav --clip-voice-at 5.7 --transition clean \
+  --follows previous
 ```
 
-An echo belongs to one seam and one record; write it for that song's key and
-ending, and let the listener hear it before it goes on air. The ident may open
+An echo belongs to one seam and one record; write it for the key and ending of
+the version that will actually play, and let the listener hear it before it goes
+on air. `--follows` keeps the echo and its line from outrunning a record that
+failed to start. The ident may open
 a show; it is a signature, not a jingle between every record. Most seams still
 need only a voice. Read `docs/STATION-CLIPS.md` before building the shelf.
 

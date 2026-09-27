@@ -50,9 +50,18 @@ An echo after a record: the rundown fires this item at the song boundary, plays
 the echo, and lets the line enter over its last chord before the next record:
 
 ```sh
+station queue "This Song"
 station queue "Next Song" "A line written for this seam." \
-  --clip echoes/after-this-song.wav --clip-voice-at 5.7 --transition clean
+  --clip echoes/after-this-song.wav --clip-voice-at 5.7 --transition clean \
+  --follows previous
 ```
+
+`--follows` ties the seam to the record it was written for: `previous` names the
+item queued right before it (or, with an empty rundown, the last one played), and
+an explicit item id works too. If that item did not play — a catalog version the
+account cannot stream, say — the scheduler still moves on, but this item drops
+its clip and line and starts only its own record; with no record, it fails and
+names the item it was waiting for. The recovery receipt records what was dropped.
 
 Without `--clip-voice-at`, the line starts when the clip ends. With `tail`, the
 clip and line play over the end of the current record, ducked, exactly as a
@@ -78,13 +87,8 @@ record without replaying the clip.
 
 ## Limits
 
-An echo is written for one record's key and ending, but the rundown cannot yet
-say that one item depends on the one before it. The scheduler skips a failed
-item and fires the next, so an echo queued behind a record that fails to
-prepare — a catalog track the account cannot stream, say — plays after the
-wrong song. Until that dependency exists, queue the echo only once its record
-has actually started (its item appears in `played/`), or keep the seam to a
-spoken line.
+`--follows` checks that the record's item played, not that it is still the
+record on air; a manual skip in between is not detected.
 
 Measure the record the listener will actually hear. Catalog versions of one
 song differ: in rehearsal, the duet a lookup placed in F major was unavailable

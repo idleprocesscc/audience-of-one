@@ -101,6 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("--phone", action="store_true")
     queue.add_argument("--device")
     _add_clip_arguments(queue)
+    queue.add_argument(
+        "--follows", metavar="ITEM",
+        help="an item id, or 'previous': if it did not play, drop this item's clip and line",
+    )
     queue.add_argument("--json", action="store_true", dest="as_json")
 
     rundown_parser = sub.add_parser("rundown", help="show the mutable programme rundown")
@@ -580,6 +584,7 @@ def command_queue(args: argparse.Namespace) -> int:
             duck=bool(getattr(args, "duck", False)),
             clip=getattr(args, "clip", None),
             clip_voice_at=getattr(args, "clip_voice_at", None),
+            follows=getattr(args, "follows", None),
         )
     except (rundown.RundownError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
@@ -615,6 +620,8 @@ def command_rundown(args: argparse.Namespace) -> int:
         if programme.get("track"):
             parts.append(f"track: {programme['track']}")
         parts.append(f"transition: {programme.get('transition', 'overlap')}")
+        if programme.get("follows"):
+            parts.append(f"follows: {programme['follows']}")
         print(f"{index:>2}. {entry['id']} [{entry['transaction_state']}] " + " | ".join(parts))
     return 0
 
