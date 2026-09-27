@@ -27,8 +27,10 @@ City Of Stars (Humming) — Justin Hurwitz, Emma Stone · qqmusic:002nWUQ438fyh1
   −23.6 LUFS; an echo mastered near −17 LUFS and a synthesized line near
   −13 LUFS arrive well above it, a step worth hearing coming.
 
-Measurements are cached below the station state by track URI; `--refresh`
-measures again and `--json` returns the full record for an agent.
+Measurements are cached below the station state by track URI. A local file is
+measured again when its size or modification time changes, and a measurement
+taken before numpy was installed is repeated once it can hear keys; `--refresh`
+always measures again, and `--json` returns the full record for an agent.
 
 ## What it can hear
 

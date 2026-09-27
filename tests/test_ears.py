@@ -147,29 +147,61 @@ class AnalyzeAndListenTests(unittest.TestCase):
         self.assertIsNone(result["key"])
         self.assertIn("audience-of-one[ears]", result["key_unavailable"])
 
-    def test_listen_measures_the_resolved_record_once_and_caches_it(self):
+    def test_listen_measures_a_local_file_once_until_the_file_changes(self):
         with tempfile.TemporaryDirectory() as raw:
             root, state = Path(raw) / "records", Path(raw) / "state"
             (root / "Nujabes").mkdir(parents=True)
-            (root / "Nujabes" / "Counting Stars.mp3").write_bytes(b"ID3")
+            record = root / "Nujabes" / "Counting Stars.mp3"
+            record.write_bytes(b"ID3 first pressing")
             client = FakeMPV(root, state)
             sources: list[str] = []
 
             def analyzer(source):
                 sources.append(source)
-                return {"duration_seconds": 248.0, "key": None, "ending": {"shape": "fade"}}
+                return {"duration_seconds": 248.0, "key": {"estimate": "B minor"},
+                        "ending": {"shape": "fade"}}
 
             first = ears.listen(state, "Nujabes/Counting Stars.mp3", client, analyzer=analyzer)
             self.assertFalse(first["cached"])
             self.assertEqual(first["uri"], "local:Nujabes/Counting Stars.mp3")
-            self.assertEqual(sources, [str((root / "Nujabes" / "Counting Stars.mp3").resolve())])
-            client.resolve = mock.Mock(side_effect=AssertionError("cache should answer"))
+            self.assertEqual(sources, [str(record.resolve())])
             again = ears.listen(state, "local:Nujabes/Counting Stars.mp3", client,
                                 analyzer=analyzer)
             self.assertTrue(again["cached"])
             self.assertEqual(len(sources), 1)
             cache = next((state / "ears").glob("*.json"))
             self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+
+            record.write_bytes(b"ID3 a remaster at the same path")
+            remastered = ears.listen(state, "local:Nujabes/Counting Stars.mp3", client,
+                                     analyzer=analyzer)
+            self.assertFalse(remastered["cached"])
+            self.assertEqual(len(sources), 2)
+            record.unlink()
+            with self.assertRaisesRegex(SpotifyError, "does not exist"):
+                ears.listen(state, "local:Nujabes/Counting Stars.mp3", client,
+                            analyzer=analyzer)
+
+    def test_a_keyless_measurement_is_repeated_once_numpy_can_hear_keys(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root, state = Path(raw) / "records", Path(raw) / "state"
+            root.mkdir()
+            (root / "Song.flac").write_bytes(b"fLaC")
+            client = FakeMPV(root, state)
+            results = [
+                {"key": None, "key_unavailable": ears.NUMPY_HINT, "ending": {}},
+                {"key": {"estimate": "E major"}, "ending": {}},
+            ]
+            analyzer = mock.Mock(side_effect=results)
+            with mock.patch("audience_of_one.ears._numpy", return_value=None):
+                ears.listen(state, "local:Song.flac", client, analyzer=analyzer)
+                self.assertTrue(ears.listen(state, "local:Song.flac", client,
+                                            analyzer=analyzer)["cached"])
+            with mock.patch("audience_of_one.ears._numpy", return_value=object()):
+                heard = ears.listen(state, "local:Song.flac", client, analyzer=analyzer)
+            self.assertFalse(heard["cached"])
+            self.assertEqual(heard["key"]["estimate"], "E major")
+            self.assertEqual(analyzer.call_count, 2)
 
     def test_refresh_measures_again_and_qq_streams_are_decoded_but_not_stored(self):
         class Resolver:
