@@ -143,6 +143,22 @@ The optional physical call-in is an event source, not an automatic canned
 answer. Read `docs/CALL-IN.md`; `station call-in watch` emits a ring or voice
 event, then the host decides whether and how to answer with `station say --phone`.
 
+## Clips: the host's own music
+
+If `[clips]` is configured, the shelf holds recordings the host prepared before
+the show: an ident, or a few bars that answer the record that just ended. A clip
+rides the voice channel, alone or with the line entering over it:
+
+```sh
+station queue "Next Song" "A line over the last chord." \
+  --clip echoes/after-this-song.wav --clip-voice-at 5.7 --transition clean
+```
+
+An echo belongs to one seam and one record; write it for that song's key and
+ending, and let the listener hear it before it goes on air. The ident may open
+a show; it is a signature, not a jingle between every record. Most seams still
+need only a voice. Read `docs/STATION-CLIPS.md` before building the shelf.
+
 ## The voice
 
 Speak to one person, never to an imaginary crowd. Metadata can identify a song;

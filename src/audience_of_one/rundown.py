@@ -84,9 +84,16 @@ def _next_order(state_path: Path) -> int:
 def append(state_path: Path, *, track: str | None = None, say: str | None = None,
            lang: str | None = None, transition: str = "overlap",
            after: str = "autoplay", phone: bool = False,
-           device: str | None = None, duck: bool = False) -> dict:
-    if not track and not say:
-        raise RundownError("a programme item needs a track, a voice line, or both")
+           device: str | None = None, duck: bool = False,
+           clip: str | None = None, clip_voice_at: float | None = None) -> dict:
+    if not track and not say and not clip:
+        raise RundownError("a programme item needs a track, a voice line, or a clip")
+    if clip_voice_at is not None:
+        if not clip or not say:
+            raise RundownError("a clip voice offset needs both a clip and a voice line")
+        if isinstance(clip_voice_at, bool) or not isinstance(clip_voice_at, (int, float)) \
+                or not 0 <= clip_voice_at <= 600:
+            raise RundownError("a clip voice offset must be from 0 to 600 seconds")
     transition = normalize_transition(transition)
     if transition not in TRANSITIONS:
         raise RundownError(f"unknown transition: {transition}")
@@ -117,6 +124,10 @@ def append(state_path: Path, *, track: str | None = None, say: str | None = None
         data["track"] = track
     if say:
         data["say"] = say
+    if clip:
+        data["clip"] = clip
+    if clip_voice_at is not None:
+        data["clip_voice_at"] = float(clip_voice_at)
     if lang:
         data["lang"] = lang
     if after != "autoplay":

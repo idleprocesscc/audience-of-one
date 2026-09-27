@@ -144,6 +144,13 @@ def validate(data: dict[str, Any]) -> list[str]:
     improv = data.get("improv")
     if improv is not None and not isinstance(improv, dict):
         raise ConfigError("[improv] must be a table")
+    clips = data.get("clips")
+    if clips is not None:
+        if not isinstance(clips, dict):
+            raise ConfigError("[clips] must be a table")
+        root = clips.get("root")
+        if not isinstance(root, str) or not root.strip():
+            raise ConfigError("clips.root must be a non-empty path")
 
     desktop = data.get("desktop", {})
     if not isinstance(desktop, dict):
