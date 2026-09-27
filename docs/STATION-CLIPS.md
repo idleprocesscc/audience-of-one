@@ -75,3 +75,17 @@ listener actually heard, so a `tail` boundary allows for the whole echo.
 A missing or escaping clip fails the item before any speech is synthesized. If
 the clip already played and only the record failed, `station retry` starts the
 record without replaying the clip.
+
+## Limits
+
+An echo is written for one record's key and ending, but the rundown cannot yet
+say that one item depends on the one before it. The scheduler skips a failed
+item and fires the next, so an echo queued behind a record that fails to
+prepare — a catalog track the account cannot stream, say — plays after the
+wrong song. Until that dependency exists, queue the echo only once its record
+has actually started (its item appears in `played/`), or keep the seam to a
+spoken line.
+
+Measure the record the listener will actually hear. Catalog versions of one
+song differ: in rehearsal, the duet a lookup placed in F major was unavailable
+to the account, and the two playable versions ended in C♯ and E minor.
