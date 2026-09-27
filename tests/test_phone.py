@@ -97,16 +97,16 @@ class PhoneVoicePlayerTests(unittest.TestCase):
         leases = []
 
         class GeneralAndroidMCP(FakeTransport):
-            def offers(self, tool):
-                return False
+            def lacks(self, tool):
+                return True
 
             def lease(self, lease_id, action, ttl_seconds=0):
                 leases.append((lease_id, action))
                 raise PhoneError("phone MCP station_power_lease failed")
 
         class StationReceiver(GeneralAndroidMCP):
-            def offers(self, tool):
-                return tool == "station_power_lease"
+            def lacks(self, tool):
+                return False
 
             def lease(self, lease_id, action, ttl_seconds=0):
                 leases.append((lease_id, action))
@@ -364,7 +364,7 @@ class MCPPhoneTransportTests(unittest.TestCase):
         self.assertEqual(requests[1][0].get_header("Mcp-session-id"), "session-1")
         self.assertNotIn("secret-test-token", output)
 
-    def test_receiver_tools_are_listed_once_per_transport(self):
+    def test_only_a_listed_absence_skips_a_tool_and_the_list_is_asked_once(self):
         class Response:
             def __init__(self, body, headers=None):
                 self.body = body.encode()
@@ -373,27 +373,31 @@ class MCPPhoneTransportTests(unittest.TestCase):
             def read(self):
                 return self.body
 
-        listing = json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": [
+        general = json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": [
             {"name": "android_write_file"}, {"name": "android_read_file"},
         ]}})
-        responses = [
-            Response(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
-                     {"mcp-session-id": "session-1"}),
-            Response("null"),
-            Response(listing),
-        ]
-        methods = []
+        # The station's own Termux receiver has no tools/list method.
+        station = json.dumps({"jsonrpc": "2.0",
+                              "error": {"code": -32602, "message": "unsupported MCP method"}})
+        for listing, lacks_lease in ((general, True), (station, False)):
+            responses = [
+                Response(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                         {"mcp-session-id": "session-1"}),
+                Response("null"),
+                Response(listing),
+            ]
+            methods = []
 
-        def opener(request, timeout):
-            methods.append(json.loads(request.data)["method"])
-            return responses.pop(0)
+            def opener(request, timeout, responses=responses, methods=methods):
+                methods.append(json.loads(request.data)["method"])
+                return responses.pop(0)
 
-        transport = MCPPhoneTransport(
-            "https://phone.invalid/mcp", "token", "public-location", opener=opener,
-        )
-        self.assertFalse(transport.offers("station_power_lease"))
-        self.assertTrue(transport.offers("android_write_file"))
-        self.assertEqual(methods, ["initialize", "notifications/initialized", "tools/list"])
+            transport = MCPPhoneTransport(
+                "https://phone.invalid/mcp", "token", "public-location", opener=opener,
+            )
+            self.assertEqual(transport.lacks("station_power_lease"), lacks_lease)
+            self.assertFalse(transport.lacks("android_write_file"))
+            self.assertEqual(methods, ["initialize", "notifications/initialized", "tools/list"])
 
     def test_optional_storage_prefix_stays_below_the_authorized_location(self):
         transport = MCPPhoneTransport(

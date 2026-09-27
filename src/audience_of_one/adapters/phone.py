@@ -83,6 +83,7 @@ class MCPPhoneTransport:
         self.session_id: str | None = None
         self.request_id = 0
         self.lock = threading.Lock()
+        self._tools_checked = False
         self._tools: set[str] | None = None
 
     def _post(self, payload: dict[str, Any], *, session: bool = True) -> dict[str, Any]:
@@ -242,9 +243,14 @@ class MCPPhoneTransport:
         })
         return raw.splitlines()
 
-    def offers(self, tool: str) -> bool:
-        """Whether this receiver's MCP server lists a tool; asked once per transport."""
-        if self._tools is None:
+    def lacks(self, tool: str) -> bool:
+        """True only when the receiver lists its tools and this one is not among them.
+
+        A general Android MCP server lists its tools; the station's own Termux
+        receiver answers tools/list as unsupported, and an unknown answer keeps the
+        current protocol instead of guessing a capability away. Asked once.
+        """
+        if not self._tools_checked:
             with self.lock:
                 self._ensure_session()
                 self.request_id += 1
@@ -256,12 +262,11 @@ class MCPPhoneTransport:
                     self._ensure_session()
                     response = self._post(payload)
             tools = (response.get("result") or {}).get("tools")
-            if response.get("error") or not isinstance(tools, list):
-                raise PhoneError("phone MCP did not list its tools")
             self._tools = {
                 str(entry.get("name")) for entry in tools if isinstance(entry, dict)
-            }
-        return tool in self._tools
+            } if not response.get("error") and isinstance(tools, list) else None
+            self._tools_checked = True
+        return self._tools is not None and tool not in self._tools
 
     def lease(self, lease_id: str, action: str, ttl_seconds: float = 0) -> dict[str, Any]:
         raw = self.call("station_power_lease", {
@@ -339,8 +344,8 @@ def _power_lease(transport: Any, lease_id: str, action: str, ttl: float = 0) -> 
     lease = getattr(transport, "lease", None)
     if not callable(lease):
         return
-    offers = getattr(transport, "offers", None)
-    if callable(offers) and not offers("station_power_lease"):
+    lacks = getattr(transport, "lacks", None)
+    if callable(lacks) and lacks("station_power_lease"):
         return
     lease(lease_id, action, ttl)
 
