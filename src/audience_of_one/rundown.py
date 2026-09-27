@@ -85,12 +85,31 @@ def _resolve_follows(state_path: Path, value: str) -> str:
     """Name the item a seam was written for: an id, or the item right before it."""
     value = str(value).strip()
     if value == "previous":
-        queued = items(state_path)
-        if queued:
-            return queued[-1]["id"]
-        played = sorted((state_path / "played").glob("*.json"))
-        if played:
-            return played[-1].stem
+        journal = Journal(state_path)
+        # A failed item stays in the queue but is shelved; the seam belongs to the
+        # last item that will still play, or else to the record played most recently.
+        for item in reversed(items(state_path)):
+            try:
+                state = (journal.load(item["filename"]) or {}).get("state")
+            except TransactionError:
+                continue
+            if item["data"] is not None and state != "failed":
+                return item["id"]
+        latest, latest_at = None, -1.0
+        for path in (state_path / "played").glob("*.json"):
+            try:
+                history = (journal.load(path.name) or {}).get("history") or []
+            except TransactionError:
+                continue
+            played_at = max(
+                (float(entry.get("at") or 0.0) for entry in history
+                 if entry.get("state") == "played"),
+                default=0.0,
+            )
+            if played_at > latest_at:
+                latest, latest_at = path.stem, played_at
+        if latest:
+            return latest
         raise RundownError("there is no earlier programme item to follow")
     identifier = value.removesuffix(".json")
     if not identifier.isdigit():

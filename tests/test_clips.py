@@ -301,12 +301,13 @@ class ClipProgrammeTests(unittest.TestCase):
             events: list[str] = []
             renders: list = []
             record = rundown.append(state, track="Unavailable version", device="Desktop")
-            Journal(state).set_state(record["filename"], "failed", "account cannot stream")
             echo = rundown.append(
                 state, track="Next", say="City of Stars. He asked the stars...",
                 clip="echo.wav", clip_voice_at=5.74, transition="clean",
                 device="Desktop", follows="previous",
             )
+            self.assertEqual(echo["data"]["follows"], record["id"])
+            Journal(state).set_state(record["filename"], "failed", "account cannot stream")
             result = self.engine(state, events, renders).execute(echo)
             self.assertEqual(result["state"], "played")
             self.assertEqual(renders, [])
@@ -368,14 +369,36 @@ class ClipRundownAndCLITests(unittest.TestCase):
                 rundown.append(state, say="Then.", follows="previous")["data"]["follows"],
                 second["id"],
             )
+            by_id = rundown.append(state, say="By id.", follows=first["id"])
+            self.assertEqual(by_id["data"]["follows"], first["id"])
+            shelved = rundown.append(state, track="Unavailable version")
+            Journal(state).set_state(shelved["filename"], "failed", "account cannot stream")
             self.assertEqual(
-                rundown.append(state, say="By id.", follows=first["id"])["data"]["follows"],
-                first["id"],
+                rundown.append(state, say="Skips the shelved item.", follows="previous")
+                ["data"]["follows"],
+                by_id["id"],
             )
             with self.assertRaisesRegex(rundown.RundownError, "invalid item id"):
                 rundown.append(state, say="Line", follows="../etc")
             with self.assertRaisesRegex(rundown.RundownError, "not found"):
                 rundown.append(state, say="Line", follows="000000000000001")
+
+    def test_follows_previous_with_an_empty_queue_uses_the_latest_play_not_the_latest_id(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw)
+            journal = Journal(state)
+            older = rundown.append(state, track="Queued first, played last")
+            newer = rundown.append(state, track="Queued second, played first")
+            with mock.patch("audience_of_one.transactions.time.time", return_value=100.0):
+                journal.set_state(newer["filename"], "played")
+            with mock.patch("audience_of_one.transactions.time.time", return_value=200.0):
+                journal.set_state(older["filename"], "played")
+            rundown.archive_played(state, newer["filename"])
+            rundown.archive_played(state, older["filename"])
+            self.assertEqual(
+                rundown.append(state, say="After it.", follows="previous")["data"]["follows"],
+                older["id"],
+            )
 
     def test_clips_table_needs_a_root(self):
         data = tomllib.loads(station_config.DEFAULT_CONFIG)

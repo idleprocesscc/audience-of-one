@@ -57,8 +57,9 @@ station queue "Next Song" "A line written for this seam." \
 ```
 
 `--follows` ties the seam to the record it was written for: `previous` names the
-item queued right before it (or, with an empty rundown, the last one played), and
-an explicit item id works too. If that item did not play — a catalog version the
+last item still waiting to play (failed items left in the rundown are skipped) or,
+when none is waiting, the item that played most recently; an explicit item id
+works too. If that item did not play — a catalog version the
 account cannot stream, say — the scheduler still moves on, but this item drops
 its clip and line and starts only its own record; with no record, it fails and
 names the item it was waiting for. The recovery receipt records what was dropped.
