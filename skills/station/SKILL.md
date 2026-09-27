@@ -156,7 +156,8 @@ station queue "Next Song" "A line over the last chord." \
 ```
 
 An echo belongs to one seam and one record; write it for the key and ending of
-the version that will actually play, and let the listener hear it before it goes
+the version that will actually play — `station ears TRACK` measures that version
+on the local and QQ Music shelves — and let the listener hear it before it goes
 on air. `--follows` keeps the echo and its line from outrunning a record that
 failed to start. The ident may open
 a show; it is a signature, not a jingle between every record. Most seams still

@@ -25,6 +25,7 @@ Documentation = "https://github.com/idleprocesscc/audience-of-one/blob/main/docs
 
 [project.optional-dependencies]
 dev = ["ruff>=0.8,<1"]
+ears = ["numpy>=1.24"]
 
 [project.scripts]
 station = "audience_of_one.cli:main"

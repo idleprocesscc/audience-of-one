@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, catalog, covers, rundown, scheduler, shortcuts, wildcards
+from . import __version__, catalog, covers, ears, rundown, scheduler, shortcuts, wildcards
 from . import config as station_config
 from .adapters import music_client, spotify_client
 from .adapters.phone import PhoneError, phone_transport, phone_voice_player
@@ -149,6 +149,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry_parser.add_argument("item", help="retryable rundown item id")
     retry_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    ears_parser = sub.add_parser(
+        "ears", help="measure key, ending, and loudness of the version that will play",
+    )
+    ears_parser.add_argument("tracks", nargs="+", help="local:PATH, qqmusic:MID, or a query")
+    ears_parser.add_argument("--refresh", action="store_true", help="measure again")
+    ears_parser.add_argument("--json", action="store_true", dest="as_json")
 
     history_parser = sub.add_parser("history", help="show completed desktop items")
     history_parser.add_argument("--json", action="store_true", dest="as_json")
@@ -800,6 +807,32 @@ def command_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_ears(args: argparse.Namespace) -> int:
+    path, state_path = _paths(args)
+    try:
+        data, _ = _validate(path)
+        client = music_client(data, state_path)
+    except (station_config.ConfigError, SpotifyError, OSError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    results, failed = [], False
+    for value in args.tracks:
+        try:
+            results.append(ears.listen(state_path, value, client, refresh=args.refresh))
+        except (ears.EarsError, SpotifyError, QQMusicError, OSError) as error:
+            failed = True
+            results.append({"requested": value, "error": str(error)})
+    if args.as_json:
+        print(json.dumps({"version": 1, "tracks": results}, ensure_ascii=False, indent=2))
+    else:
+        for result in results:
+            if "error" in result:
+                print(f"ERROR: {result['requested']}: {result['error']}", file=sys.stderr)
+            else:
+                print(ears.describe(result))
+    return 2 if failed else 0
+
+
 def command_off(args: argparse.Namespace) -> int:
     path, state_path = _paths(args)
     try:
@@ -1415,6 +1448,8 @@ def main(argv: list[str] | None = None) -> None:
         code = command_retry(args)
     elif args.command == "history":
         code = command_history(args)
+    elif args.command == "ears":
+        code = command_ears(args)
     elif args.command == "off":
         code = command_off(args)
     elif args.command == "toggle":

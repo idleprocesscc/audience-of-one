@@ -118,6 +118,15 @@ class LocalMPVClient:
     def supports_track_uri(uri: str) -> bool:
         return uri.startswith(("local:", "qqmusic:"))
 
+    def analysis_source(self, uri: str) -> str:
+        """Return the decodable file or just-resolved stream for read-only measurement."""
+        if uri.startswith("qqmusic:"):
+            stream = self._resolved_streams.get(uri)
+            if not stream:
+                raise SpotifyError("QQ Music URL expired from this command; resolve the track again")
+            return stream["url"]
+        return str(self._path(uri))
+
     def phone_stream(self, uri: str) -> dict[str, Any]:
         """Return one just-resolved QQ stream for transient phone staging."""
         if not uri.startswith("qqmusic:"):
