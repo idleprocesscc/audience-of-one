@@ -83,6 +83,8 @@ class MCPPhoneTransport:
         self.session_id: str | None = None
         self.request_id = 0
         self.lock = threading.Lock()
+        self._tools_checked = False
+        self._tools: set[str] | None = None
 
     def _post(self, payload: dict[str, Any], *, session: bool = True) -> dict[str, Any]:
         headers = {
@@ -241,6 +243,31 @@ class MCPPhoneTransport:
         })
         return raw.splitlines()
 
+    def lacks(self, tool: str) -> bool:
+        """True only when the receiver lists its tools and this one is not among them.
+
+        A general Android MCP server lists its tools; the station's own Termux
+        receiver answers tools/list as unsupported, and an unknown answer keeps the
+        current protocol instead of guessing a capability away. Asked once.
+        """
+        if not self._tools_checked:
+            with self.lock:
+                self._ensure_session()
+                self.request_id += 1
+                payload = {"jsonrpc": "2.0", "id": self.request_id + 1,
+                           "method": "tools/list", "params": {}}
+                response = self._post(payload)
+                if self._session_rejected(response):
+                    self.session_id = None
+                    self._ensure_session()
+                    response = self._post(payload)
+            tools = (response.get("result") or {}).get("tools")
+            self._tools = {
+                str(entry.get("name")) for entry in tools if isinstance(entry, dict)
+            } if not response.get("error") and isinstance(tools, list) else None
+            self._tools_checked = True
+        return self._tools is not None and tool not in self._tools
+
     def lease(self, lease_id: str, action: str, ttl_seconds: float = 0) -> dict[str, Any]:
         raw = self.call("station_power_lease", {
             "location_id": self.location_id,
@@ -309,10 +336,18 @@ def _events(raw: str) -> dict[str, dict[str, Any]]:
 
 
 def _power_lease(transport: Any, lease_id: str, action: str, ttl: float = 0) -> None:
-    """Use the current receiver lease protocol without breaking test/legacy transports."""
+    """Use the current receiver lease protocol without breaking test/legacy transports.
+
+    A receiver reached through a general-purpose Android MCP server (files in shared
+    storage, its own player keeping itself awake) has no lease tool; skip it there.
+    """
     lease = getattr(transport, "lease", None)
-    if callable(lease):
-        lease(lease_id, action, ttl)
+    if not callable(lease):
+        return
+    lacks = getattr(transport, "lacks", None)
+    if callable(lacks) and lacks("station_power_lease"):
+        return
+    lease(lease_id, action, ttl)
 
 
 class PhoneVoicePlayer:
