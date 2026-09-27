@@ -91,6 +91,7 @@ record without replaying the clip.
 `--follows` checks that the record's item played, not that it is still the
 record on air; a manual skip in between is not detected.
 
-Measure the record the listener will actually hear. Catalog versions of one
+Measure the record the listener will actually hear — `station ears` does this for
+local files and QQ Music streams (see `docs/EARS.md`). Catalog versions of one
 song differ: in rehearsal, the duet a lookup placed in F major was unavailable
 to the account, and the two playable versions ended in C♯ and E minor.

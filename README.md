@@ -61,6 +61,9 @@ in receipted transactions. Later directions live in [ROADMAP.md](ROADMAP.md).
 - shipped: station clips — host-prepared idents and short musical echoes ride
   the voice channel, rendered alone or under the line at a chosen second, with
   the same transitions, ducking, phone delivery, and receipts as speech;
+- shipped: `station ears` — decodes the exact local file or QQ Music stream that
+  will play and reports its key, final chord, ending shape, and loudness
+  (key and chord with the optional numpy extra);
 - optional shipped toy: a physical-key call-in can remain a ring-only signal or
   use the Android foreground recorder, authenticated phone transport, and a
   listener-chosen STT endpoint to hand one short voice clip to the agent;
@@ -88,7 +91,8 @@ routes and the standalone `station say "..." --phone` intercom. The optional
 [physical call-in](docs/CALL-IN.md) stays outside the main installation path.
 
 For an ident at the top of a show, or a few bars answering the record that just
-ended before the host speaks, see [station clips](docs/STATION-CLIPS.md).
+ended before the host speaks, see [station clips](docs/STATION-CLIPS.md); to
+measure the version that will actually play first, see [station ears](docs/EARS.md).
 
 For the no-subscription local route, use the
 [local record-box preview](docs/LOCAL-RECORD-BOX.md). It shares the programme and
