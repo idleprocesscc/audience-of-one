@@ -133,6 +133,8 @@ not granted. Copies retain the required provenance notice
 `audience-of-one:kcg:2026`. See [PROVENANCE.md](PROVENANCE.md) for the human and
 machine-readable origin mark.
 
+Some of the things Claude made along the way are kept at [claude-n-koshi.cc/nerolette](https://claude-n-koshi.cc/nerolette/) · source in [paper-boats](https://github.com/idleprocesscc/paper-boats).
+
 ---
 
 Audience of One · Koshi × Claude × GPT · 2026
